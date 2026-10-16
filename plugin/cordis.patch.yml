@@ -1,0 +1,11 @@
+# dsh bundle layer: mount the workbench panel plugin.
+#
+# The plugin registers the "工作台" sidebar entry and its page (browser half,
+# discovered through package.json dsh.client) and serves the aggregated
+# language-model statistics at /dsh-workbench (host half).
+- insert:
+    - id: dsh-workbench
+      name: '@dsh-workbench/panel'
+      config:
+        timeZone: Asia/Shanghai
+        days: 60

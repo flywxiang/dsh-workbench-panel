@@ -1,0 +1,19 @@
+# Build output and collected data — regenerate with `node tools/build.mjs`.
+out/
+dist/
+
+# Parsed session cache. Holds real conversation data; never commit it.
+cache/
+
+# Local config backups taken while editing the profile.
+backup/
+
+node_modules/
+.DS_Store
+
+# Probe scratch files.
+*.log
+
+# Scratch debug script from the calendar-heatmap rewrite. Not a test: it has no
+# assertions and references classes the rewrite removed.
+tools/cal-test.mjs

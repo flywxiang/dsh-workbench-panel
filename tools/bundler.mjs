@@ -1,0 +1,140 @@
+/**
+ * Bundle the workbench sources into browser-ready scripts.
+ *
+ * The engine modules are plain ESM with a single, regular import/export shape,
+ * so a small deterministic transform is enough: hoist the import lines, drop the
+ * `export` keywords, and concatenate in dependency order inside one IIFE. That
+ * keeps one source of truth for the charts while shipping a zero-dependency
+ * page and a zero-build DSH client bundle.
+ */
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const here = dirname(fileURLToPath(import.meta.url))
+const srcDir = join(here, '..', 'src')
+
+/**
+ * The DSH client entry name, i.e. the module id the host looks the factory up
+ * under. It must equal the cordis row name (`cordis.patch.yml` `name:`) —
+ * the host resolves the graph row by that name, then loads `./client` and
+ * requires the factory to have registered under the very same id. Deriving it
+ * from the package name keeps the two from drifting apart.
+ */
+const moduleId = JSON.parse(
+  readFileSync(join(here, '..', 'plugin', 'package.json'), 'utf8'),
+).name
+
+/** Dependency order of the browser-side modules. */
+const MODULES = ['workbench-data.mjs', 'workbench-render.mjs']
+
+/**
+ * Strip an ESM module down to a body that shares one IIFE scope.
+ * @param {string} source - module source text.
+ * @param {string} file - module file name, for error messages.
+ * @returns {{body: string, exports: string[]}} body text and exported names.
+ */
+function transform(source, file) {
+  /** @type {string[]} */
+  const exports = []
+  const body = source
+    // Drop import statements: every symbol now lives in the shared scope.
+    .replace(/^import\s+[\s\S]*?from\s+['"][^'"]+['"]\s*;?/gm, '')
+    // `export function name` / `export const name` / `export class name`
+    .replace(/^export\s+(function|const|let|var|class)\s+([A-Za-z0-9_$]+)/gm, (_match, kind, name) => {
+      exports.push(name)
+      return `${kind} ${name}`
+    })
+    // `export { a, b }` and `export { a as b }` re-exports.
+    .replace(/^export\s*\{([^}]*)\}\s*;?$/gm, (_match, names) => {
+      for (const piece of names.split(',')) {
+        const name = piece.trim().split(/\s+as\s+/).pop()?.trim()
+        if (name) exports.push(name)
+      }
+      return ''
+    })
+  if (/\bexport\b/.test(body)) throw new Error(`unhandled export form in ${file}`)
+  if (/\bimport\b.*from/.test(body)) throw new Error(`unhandled import form in ${file}`)
+  return { body, exports }
+}
+
+/**
+ * Collect top-level declaration names, to catch cross-module collisions that
+ * concatenation would otherwise turn into a runtime ReferenceError.
+ * @param {string} body - module body after the transform.
+ * @param {string} file - module file name, for error messages.
+ * @returns {string[]} declared names.
+ */
+function topLevelNames(body, file) {
+  const names = []
+  const pattern = /^(?:const|let|var|function|class)\s+([A-Za-z0-9_$]+)/gm
+  let match = pattern.exec(body)
+  while (match !== null) {
+    names.push(match[1])
+    match = pattern.exec(body)
+  }
+  if (names.length === 0) throw new Error(`no top-level declarations found in ${file}`)
+  return names
+}
+
+/**
+ * Build the shared engine bundle body plus its exported name list.
+ * @returns {{body: string, exports: string[]}} concatenated source and names.
+ */
+export function buildEngineBundle() {
+  const chunks = []
+  const exported = []
+  const seen = new Map()
+  for (const file of MODULES) {
+    const { body, exports } = transform(readFileSync(join(srcDir, file), 'utf8'), file)
+    for (const name of topLevelNames(body, file)) {
+      const owner = seen.get(name)
+      if (owner !== undefined) {
+        throw new Error(`top-level name "${name}" is declared in both ${owner} and ${file}; rename it`)
+      }
+      seen.set(name, file)
+    }
+    chunks.push(`// ---- src/${file} ----\n${body}`)
+    exported.push(...exports)
+  }
+  return { body: chunks.join('\n\n'), exports: exported }
+}
+
+/**
+ * Build the DSH client bundle: the engine plus a mount function, registered
+ * through the host's lazy-CJS loader protocol.
+ * @param {string} clientSource - client plugin source (see `src/client-panel.js`).
+ * @param {object} [options]
+ * @param {string} [options.basePath] - host route prefix the panel fetches from.
+ * @returns {string} one `window.__ModuleLoader__.load({...})` script.
+ */
+export function buildClientBundle(clientSource, options = {}) {
+  const { body } = buildEngineBundle()
+  const basePath = options.basePath ?? '/dsh-workbench'
+  if (/'/.test(basePath)) throw new Error('base path must not contain a single quote')
+  if (/\bimport\b|\bexport\b/.test(clientSource)) {
+    throw new Error('client panel source must be a plain script (no import/export)')
+  }
+  const panel = clientSource.replaceAll('WORKBENCH_BASE_PATH', `'${basePath}'`)
+  return `// Generated by tools/build.mjs — do not edit by hand.
+// DSH client plugin for the workbench panel. The chart engine below is bundled
+// from the same sources the standalone dashboard uses, so both surfaces share
+// every number, color, and label.
+window.__ModuleLoader__.load({
+  id: '${moduleId}',
+  factory: (require) => {
+    var module = { exports: {} }
+    var React = require('react')
+
+    var WB_ENGINE = (function () {
+${body.replace(/^/gm, '      ')}
+      return { renderWorkbench: renderWorkbench, WORKBENCH_CSS: WORKBENCH_CSS }
+    })()
+
+${panel.replace(/^/gm, '    ')}
+
+    return module.exports
+  }
+})
+`
+}

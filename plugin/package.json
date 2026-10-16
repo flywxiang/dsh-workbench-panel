@@ -1,0 +1,49 @@
+{
+  "name": "@dsh-workbench/panel",
+  "version": "1.1.0",
+  "type": "module",
+  "description": "DSH 工作台：仅统计语言模型调用的每日趋势与调用热力图，作为侧边栏面板和独立仪表盘页。热力图为贡献图样式，固定展示最近一年",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "dashboard",
+    "heatmap"
+  ],
+  "license": "MIT",
+  "exports": {
+    ".": {
+      "default": "./index.mjs"
+    },
+    "./client": {
+      "default": "./lib/client/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.mjs",
+    "lib",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.15"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-primitives",
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-locale"
+      ],
+      "platform": "web"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

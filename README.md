@@ -9,7 +9,7 @@ DSH（DeepSeek Harness）的「工作台」插件：**只统计语言模型调�
 想用的人**不需要 clone 这个仓库**，直接装 Release 里的 tgz：
 
 ```bash
-npx -y @deepseek-ai/dsh plugin --profile web add ./dsh-workbench-panel-1.1.0.tgz
+npx -y @deepseek-ai/dsh plugin --profile web add ./dsh-workbench-panel-1.1.1.tgz
 launchctl kickstart -k gui/$(id -u)/ai.openclaw.dsh-rc8
 ```
 
@@ -60,6 +60,7 @@ launchctl kickstart -k gui/$(id -u)/ai.openclaw.dsh-rc8
 - `step/start → step/end` 之间调用了语言模型的那一步记 1 次调用；会话标题、联网搜索等辅助调用不计入。
 - 每日趋势跟随插件行的 `days` 配置（默认 60 天）。
 - **调用热力图固定展示最近 365 天**，不跟随 `days`——9 列的图看不出节奏，53 列才是贡献图该有的样子。
+- 热力图**按卡片宽度自适应**：列间距跟着容器实际宽度计算，宽屏格子更大、铺满整张卡片，窄屏不会溢出。
 
 ## License
 

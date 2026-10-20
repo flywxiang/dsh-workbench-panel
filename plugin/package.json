@@ -1,6 +1,6 @@
 {
   "name": "@dsh-workbench/panel",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "type": "module",
   "description": "DSH 工作台：仅统计语言模型调用的每日趋势与调用热力图，作为侧边栏面板和独立仪表盘页。热力图为贡献图样式，固定展示最近一年",
   "keywords": [

@@ -11,8 +11,8 @@
 
 ```bash
 # 1. 拿到包（二选一）
-#    a) 本地 tarball：把 dsh-workbench-panel-1.1.0.tgz 发给对方
-npx -y @deepseek-ai/dsh plugin --profile web add ./dsh-workbench-panel-1.1.0.tgz
+#    a) 本地 tarball：把 dsh-workbench-panel-1.1.1.tgz 发给对方
+npx -y @deepseek-ai/dsh plugin --profile web add ./dsh-workbench-panel-1.1.1.tgz
 
 #    b) 已发布到 npm：直接用包名
 npx -y @deepseek-ai/dsh plugin --profile web add @dsh-workbench/panel
@@ -26,7 +26,7 @@ launchctl kickstart -k gui/$(id -u)/ai.openclaw.dsh-rc8   # macOS launchd 启动
 
 打开后侧边栏会出现「工作台」入口（英文界面显示 Workbench），点开就是面板。
 
-> tarball 的文件名不含 scope：`@dsh-workbench/panel@1.1.0` 打包出来是 `dsh-workbench-panel-1.1.0.tgz`，这是 npm 的规则，不是漏字。
+> tarball 的文件名不含 scope：`@dsh-workbench/panel@1.1.1` 打包出来是 `dsh-workbench-panel-1.1.1.tgz`，这是 npm 的规则，不是漏字。
 
 ### 如果 `dsh plugin add` 报 pnpm 错误
 
@@ -37,7 +37,7 @@ launchctl kickstart -k gui/$(id -u)/ai.openclaw.dsh-rc8   # macOS launchd 启动
 ```bash
 # a) 先在 profile 目录里对齐一次，再重试
 cd ~/.dsh/profiles/web && pnpm install --config.public-hoist-pattern='*'
-npx -y @deepseek-ai/dsh plugin --profile web add ./dsh-workbench-panel-1.1.0.tgz
+npx -y @deepseek-ai/dsh plugin --profile web add ./dsh-workbench-panel-1.1.1.tgz
 
 # b) 手工接线（不跑 pnpm）
 #    注意 scope 目录要一起建，软链名是 @dsh-workbench/panel
@@ -58,6 +58,8 @@ ln -sfn /绝对路径/到/解压后的/package ~/.dsh/profiles/web/node_modules/
 ## 调用热力图
 
 贡献图样式：一格一天，周为列，星期二/四/六标注在左侧，每出现一个新月份就在顶部标一次月份，下方是「少 → 多」的五级色例。鼠标悬停显示当天的调用次数。
+
+**按卡片宽度自适应**：列间距按容器实际宽度计算，宽屏格子更大并铺满整张卡片，窄屏自动缩小不溢出；月份/星期文字走独立字号，不会随格子一起被放大。
 
 配色跟随 DSH 主题强调色，浅色/深色界面都协调。
 

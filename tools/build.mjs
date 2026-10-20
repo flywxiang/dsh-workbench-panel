@@ -70,7 +70,9 @@ function assertParses(code, label) {
 
 const engine = buildEngineBundle()
 assertParses(engine.body, '引擎 bundle')
-const css = new RegExp('const WORKBENCH_CSS = `([\\s\\S]*?)`\\n').exec(engine.body)
+// `\r?` because a Windows checkout with core.autocrlf hands us CRLF line endings,
+// and the extraction below anchors on the newline after the template literal.
+const css = new RegExp('const WORKBENCH_CSS = `([\\s\\S]*?)`\\r?\\n').exec(engine.body)
 if (css === null) throw new Error('WORKBENCH_CSS not found in the bundled engine')
 const embeddedJson = JSON.stringify(payload).replace(/</g, '\\u003c')
 

@@ -8,7 +8,7 @@
  *
  * Usage: node tools/pack.mjs
  */
-import { execFileSync } from 'node:child_process'
+import { execFileSync, execSync } from 'node:child_process'
 import { mkdirSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -20,10 +20,15 @@ const distDir = join(here, '..', 'dist')
 const manifest = JSON.parse(readFileSync(join(pluginDir, 'package.json'), 'utf8'))
 mkdirSync(distDir, { recursive: true })
 
-const output = execFileSync('npm', ['pack', '--pack-destination', distDir, '--json'], {
-  cwd: pluginDir,
-  encoding: 'utf8',
-})
+// Windows ships npm as `npm.cmd`, which execFileSync cannot spawn without a shell;
+// quoting the destination keeps a profile path with spaces intact.
+const output =
+  process.platform === 'win32'
+    ? execSync(`npm pack --pack-destination "${distDir}" --json`, { cwd: pluginDir, encoding: 'utf8' })
+    : execFileSync('npm', ['pack', '--pack-destination', distDir, '--json'], {
+        cwd: pluginDir,
+        encoding: 'utf8',
+      })
 const [report] = JSON.parse(output)
 const tarball = join(distDir, report.filename)
 const size = statSync(tarball).size

@@ -483,13 +483,18 @@ export function renderWorkbench(host, payload, options = {}) {
    * Draw the call heatmap as a contribution graph.
    *
    * Geometry, level cuts, colour language and legend are ported from OpenClaw's
-   * own usage heatmap so the two read as the same component: 11px cells on a
-   * 14px pitch, weekday labels every other row, one month label per column that
-   * opens a new month, and five accent-mixed levels cut at the 25/50/75th
-   * percentile of the days that actually had a call. The board keeps OpenClaw's
-   * fixed 116px height and draws its own trailing year (`heatmapDaily`), so the
-   * graph has the ~53 week-columns that make a contribution graph legible no
+   * own usage heatmap so the two read as the same component: weekday labels every
+   * other row, one month label per column that opens a new month, and five
+   * accent-mixed levels cut at the 25/50/75th percentile of the days that
+   * actually had a call. The board draws its own trailing year (`heatmapDaily`),
+   * so it keeps the ~53 week-columns that make a contribution graph legible no
    * matter how narrow the trend window is.
+   *
+   * The column pitch is measured from the container instead of being hard-coded,
+   * so the board always spans the full card width and the cells grow with the
+   * window (11px cells on a 14px pitch only when nothing wider is available).
+   * Label text keeps its own scale through `--wb-heat-font`, so a wide window
+   * enlarges the cells without turning the axis labels into billboards.
    * @returns {void}
    */
   function drawHeatmap() {
@@ -501,11 +506,6 @@ export function renderWorkbench(host, payload, options = {}) {
       return
     }
     const timeZone = current.timeZone
-    const cell = 11
-    const pitch = 14
-    const labelW = 30
-    const labelH = 18
-    const boardH = 116
     const byDay = new Map(days.map((day) => [day.day, day]))
 
     /**
@@ -534,6 +534,26 @@ export function renderWorkbench(host, payload, options = {}) {
       (Date.parse(`${gridEnd}T00:00:00Z`) - Date.parse(`${gridStart}T00:00:00Z`)) / 604800000,
     ) + 1
 
+    // Measure the card and derive the column pitch from it, so the board spans the
+    // full width and the cells get as large as that width allows. The label font
+    // stays on its own scale: it is what keeps a wide window from growing the axis
+    // text along with the cells. Client surfaces have a live container to measure;
+    // the standalone page falls back to the host width and then to a sensible
+    // default, and DOM-less harnesses (tests) take the default straight away.
+    const measured =
+      typeof heatChart.getBoundingClientRect === 'function'
+        ? Math.round(heatChart.getBoundingClientRect().width)
+        : 0
+    const hostWidth = Math.round(host.clientWidth) || 0
+    const available = Math.max(360, measured || hostWidth || 986)
+    const labelW = 34
+    const labelH = 24
+    const gap = 3
+    const pitch = Math.max(9, Math.floor((available - labelW) / weekCount))
+    const cell = Math.max(6, pitch - gap)
+    const labelFont = Math.max(9, Math.min(16, Math.round(pitch * 0.42)))
+    const boardH = labelH + 7 * pitch
+
     // Five levels cut at the quartiles of the days that had a call, so one busy
     // outlier cannot flatten everything else into level 1. Zero-call days stay at
     // level 0 whatever the quartiles say.
@@ -548,18 +568,20 @@ export function renderWorkbench(host, payload, options = {}) {
       return 4
     }
 
-    const width = labelW + weekCount * pitch - (pitch - cell)
+    const width = labelW + weekCount * pitch - gap
     const svg = svgEl(doc, 'svg', {
       viewBox: `0 0 ${width} ${boardH}`,
       width,
       height: boardH,
-      style: `--wb-heat-width: ${width}px`,
+      style: `--wb-heat-width: ${width}px; --wb-heat-font: ${labelFont}px`,
       class: 'wb-svg wb-svg-heat',
       role: 'group',
       'aria-label': '调用热力图',
     })
     for (const row of [1, 3, 5]) {
-      svg.append(textNode(doc, labelW - 6, labelH + row * pitch + cell / 2 + 4, WEEKDAYS[row], 'wb-heat-wday'))
+      svg.append(
+        textNode(doc, labelW - 6, labelH + row * pitch + cell / 2 + labelFont / 3, WEEKDAYS[row], 'wb-heat-wday'),
+      )
     }
     const monthFmt = new Intl.DateTimeFormat('zh-CN', { timeZone: timeZone, month: 'numeric' })
     let labelledMonth = null
@@ -577,7 +599,7 @@ export function renderWorkbench(host, payload, options = {}) {
           y: labelH + wday * pitch,
           width: cell,
           height: cell,
-          rx: 2.5,
+          rx: Math.max(2, Math.round(cell * 0.18)),
           class: `wb-heat-cell wb-heat-${levelFor(calls)}${isToday ? ' wb-heat-today' : ''}`,
         })
         rect.append(svgEl(doc, 'title', {}))
@@ -586,7 +608,9 @@ export function renderWorkbench(host, payload, options = {}) {
       }
       if (columnMonth !== null && columnMonth !== labelledMonth) {
         labelledMonth = columnMonth
-        svg.append(textNode(doc, colX, 10, monthFmt.format(new Date(`${columnMonth}-01T12:00:00`)), 'wb-heat-month'))
+        svg.append(
+          textNode(doc, colX, labelH - 9, monthFmt.format(new Date(`${columnMonth}-01T12:00:00`)), 'wb-heat-month'),
+        )
       }
     }
     heatChart.replaceChildren(svg)
@@ -637,6 +661,7 @@ export function renderWorkbench(host, payload, options = {}) {
             pending = null
             drawTrend()
             drawLatency()
+            drawHeatmap()
           }, 60)
         })
       : null
@@ -785,19 +810,19 @@ export const WORKBENCH_CSS = `
 .wb-bar-hit:hover { fill: var(--wb-accent); opacity: 0.08; }
 .wb-dot { opacity: 0.85; }
 .wb-heat { overflow-x: auto; }
-.wb-heat-meta { display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--wb-dim); font-size: 11px; margin-bottom: 6px; }
-.wb-heat-legend { display: flex; align-items: center; gap: 4px; color: var(--wb-dim); font-size: 11px; margin: 6px 0 2px; }
+.wb-heat-meta { display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--wb-dim); font-size: 12px; margin-bottom: 6px; }
+.wb-heat-legend { display: flex; align-items: center; gap: 5px; color: var(--wb-dim); font-size: 12px; margin: 8px 0 2px; }
 .wb-heat-legend-label { }
-.wb-heat-swatch { width: 11px; height: 11px; border-radius: 2.5px; display: inline-block; }
-.wb-svg-heat { display: block; width: min(100%, var(--wb-heat-width, 100%)); height: auto; }
+.wb-heat-swatch { width: 14px; height: 14px; border-radius: 3px; display: inline-block; }
+.wb-svg-heat { display: block; width: 100%; max-width: 100%; height: auto; }
 .wb-heat-0 { fill: color-mix(in srgb, var(--wb-dim) 12%, var(--wb-bg)); background: color-mix(in srgb, var(--wb-dim) 12%, var(--wb-bg)); }
 .wb-heat-1 { fill: color-mix(in srgb, var(--wb-accent) 25%, var(--wb-bg)); background: color-mix(in srgb, var(--wb-accent) 25%, var(--wb-bg)); }
 .wb-heat-2 { fill: color-mix(in srgb, var(--wb-accent) 50%, var(--wb-bg)); background: color-mix(in srgb, var(--wb-accent) 50%, var(--wb-bg)); }
 .wb-heat-3 { fill: color-mix(in srgb, var(--wb-accent) 75%, var(--wb-bg)); background: color-mix(in srgb, var(--wb-accent) 75%, var(--wb-bg)); }
 .wb-heat-4 { fill: var(--wb-accent); background: var(--wb-accent); }
 .wb-heat-today { stroke: var(--wb-dim); stroke-width: 1; }
-.wb-heat-month { fill: var(--wb-dim); font-size: 10px; }
-.wb-heat-wday { fill: var(--wb-dim); font-size: 10px; text-anchor: end; }
+.wb-heat-month { fill: var(--wb-dim); font-size: var(--wb-heat-font, 12px); }
+.wb-heat-wday { fill: var(--wb-dim); font-size: var(--wb-heat-font, 12px); text-anchor: end; }
 .wb-cal { overflow-x: auto; }
 
 .wb-coverage { display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--wb-dim); font-size: 11px; border-top: 1px solid var(--wb-border); padding-top: 10px; }

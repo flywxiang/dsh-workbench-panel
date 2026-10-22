@@ -9,6 +9,7 @@
  * Time bucketing uses a caller-supplied IANA zone so "daily" means the user's
  * local day rather than UTC.
  */
+import { buildInsights } from './insights.mjs'
 
 /**
  * Trailing window the call heatmap always draws, independent of the trend
@@ -55,12 +56,8 @@ export function seriesColor(label, index, assignments) {
  * @returns {string} `YYYY-MM-DD`.
  */
 export function dayKey(epochMs, timeZone) {
-  return new Intl.DateTimeFormat('en-CA', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(new Date(epochMs))
+  const parts = localParts(epochMs, timeZone)
+  return `${parts.year}-${parts.month}-${parts.day}`
 }
 
 /**
@@ -70,12 +67,7 @@ export function dayKey(epochMs, timeZone) {
  * @returns {number} hour of day in the zone.
  */
 export function hourOf(epochMs, timeZone) {
-  const hour = new Intl.DateTimeFormat('en-GB', {
-    timeZone,
-    hour: '2-digit',
-    hour12: false,
-  }).format(new Date(epochMs))
-  return Number.parseInt(hour === '24' ? '0' : hour, 10)
+  return localParts(epochMs, timeZone).hour
 }
 
 /**
@@ -85,8 +77,60 @@ export function hourOf(epochMs, timeZone) {
  * @returns {number} ISO weekday, Monday 1 through Sunday 7.
  */
 export function isoWeekdayOf(epochMs, timeZone) {
-  const name = new Intl.DateTimeFormat('en-GB', { timeZone, weekday: 'short' }).format(new Date(epochMs))
-  return { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 7 }[name]
+  return WEEKDAY_INDEX[localParts(epochMs, timeZone).weekday] ?? 1
+}
+
+/** Zone formatters, created once per zone instead of once per call. */
+const zoneFormatters = new Map()
+
+/** Bounded memo of computed local parts, keyed by `zone|epoch`. */
+const localPartsCache = new Map()
+
+/** Cap on the local-parts memo; a build rarely exceeds it and a clear is cheap. */
+const LOCAL_PARTS_LIMIT = 200_000
+
+/** ISO weekday index by short English name. */
+const WEEKDAY_INDEX = { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 7 }
+
+/**
+ * Resolve one instant's local calendar parts in a zone.
+ *
+ * `Intl.DateTimeFormat` construction is expensive (it resolves zone data), so a
+ * formatter is cached per zone and results are memoized: a payload build formats
+ * every call, and constructing a formatter per call made the build take seconds.
+ * @param {number} epochMs - instant.
+ * @param {string} timeZone - IANA zone.
+ * @returns {{year: string, month: string, day: string, hour: number, weekday: string}} local parts.
+ */
+function localParts(epochMs, timeZone) {
+  const cacheKey = `${timeZone}|${epochMs}`
+  const cached = localPartsCache.get(cacheKey)
+  if (cached !== undefined) return cached
+  let formatter = zoneFormatters.get(timeZone)
+  if (formatter === undefined) {
+    formatter = new Intl.DateTimeFormat('en-GB', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      hour12: false,
+      weekday: 'short',
+    })
+    zoneFormatters.set(timeZone, formatter)
+  }
+  const values = {}
+  for (const part of formatter.formatToParts(new Date(epochMs))) values[part.type] = part.value
+  const parts = {
+    year: values.year ?? '1970',
+    month: values.month ?? '01',
+    day: values.day ?? '01',
+    hour: values.hour === '24' ? 0 : Number.parseInt(values.hour ?? '0', 10),
+    weekday: values.weekday ?? 'Mon',
+  }
+  if (localPartsCache.size >= LOCAL_PARTS_LIMIT) localPartsCache.clear()
+  localPartsCache.set(cacheKey, parts)
+  return parts
 }
 
 /**
@@ -225,9 +269,10 @@ export function formatMs(value) {
  * @param {string} input.timeZone - IANA zone for every calendar bucket.
  * @param {number} [input.days] - trailing day window for the trend; 0 means every day.
  * @param {number} [input.now] - reference instant for the window.
+ * @param {object} [input.insights] - insights options (prices, windows, thresholds).
  * @returns {object} the payload consumed by both renderers.
  */
-export function buildWorkbenchPayload({ calls, sessions, scan, timeZone, days = 30, now = Date.now() }) {
+export function buildWorkbenchPayload({ calls, sessions, scan, timeZone, days = 30, now = Date.now(), insights = {} }) {
   const colors = {}
   const modelTotals = new Map()
   for (const call of calls) {
@@ -467,6 +512,22 @@ export function buildWorkbenchPayload({ calls, sessions, scan, timeZone, days = 
           delta: sumCalls(recent7) - sumCalls(previous7),
         }
 
+  // Recent-window insights (cost, deliverables, unfinished todos, waiting-on-user
+  // sessions, context warnings, weekly report). Prices and thresholds come from
+  // the plugin row; the defaults live in insights.mjs.
+  const insightsPayload = buildInsights({
+    calls,
+    sessions,
+    options: {
+      now,
+      timeZone,
+      prices: insights.prices,
+      windows: insights.windows,
+      contextWarnTokens: insights.contextWarnTokens,
+      showLatency: insights.showLatency,
+    },
+  })
+
   return {
     generatedAt: Date.now(),
     timeZone,
@@ -527,6 +588,7 @@ export function buildWorkbenchPayload({ calls, sessions, scan, timeZone, days = 
     },
     trends,
     heatmap: { max: heatmapMax, grid: heatmap, byModel: heatmapByModelOut },
+    insights: insightsPayload,
   }
 }
 

@@ -91,11 +91,13 @@ function digestOf(buffer) {
 function loadCache(cachePath) {
   try {
     const parsed = JSON.parse(readFileSync(cachePath, 'utf8'))
-    if (parsed?.version === 1 && parsed.sessions !== null && typeof parsed.sessions === 'object') return parsed
+    // v2 added the insights fields (title/lastEventAt/tokens/models/deliverables/
+    // todos/context/waiting); an older cache lacks them, so it is a cold start.
+    if (parsed?.version === 2 && parsed.sessions !== null && typeof parsed.sessions === 'object') return parsed
   } catch {
     // A missing or unreadable cache is a cold start, never a failure.
   }
-  return { version: 1, sessions: {} }
+  return { version: 2, sessions: {} }
 }
 
 /**
@@ -120,6 +122,7 @@ function saveCache(cachePath, cache) {
  * @param {boolean} [options.useCache] - reuse and refresh the parse cache.
  * @param {string} [options.cachePath] - cache file location.
  * @param {number} [options.now] - reference instant.
+ * @param {object} [options.insights] - insights options (prices, windows, thresholds, showLatency).
  * @returns {Promise<{payload: object, stats: object}>} payload plus collection accounting.
  */
 export async function collectWorkbench(options = {}) {
@@ -128,8 +131,8 @@ export async function collectWorkbench(options = {}) {
   const cachePath = options.cachePath ?? join(dshHome, 'workbench', 'cache', 'sessions.json')
   const useCache = options.useCache !== false
   const startedAt = Date.now()
-  const cache = useCache ? loadCache(cachePath) : { version: 1, sessions: {} }
-  const nextCache = { version: 1, sessions: {} }
+  const cache = useCache ? loadCache(cachePath) : { version: 2, sessions: {} }
+  const nextCache = { version: 2, sessions: {} }
   const artifacts = listSessionArtifacts(dshHome)
   const sessions = []
   const calls = []
@@ -210,6 +213,7 @@ export async function collectWorkbench(options = {}) {
     timeZone,
     days: options.days ?? 30,
     now: options.now ?? Date.now(),
+    insights: options.insights ?? {},
   })
 
   return {

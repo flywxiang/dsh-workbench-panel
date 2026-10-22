@@ -21,7 +21,6 @@ window.__ModuleLoader__.load({
        * Time bucketing uses a caller-supplied IANA zone so "daily" means the user's
        * local day rather than UTC.
        */
-      
       /**
        * Trailing window the call heatmap always draws, independent of the trend
        * window. 365 days puts ~53 week-columns on the board, which is what makes the
@@ -67,12 +66,8 @@ window.__ModuleLoader__.load({
        * @returns {string} `YYYY-MM-DD`.
        */
       function dayKey(epochMs, timeZone) {
-        return new Intl.DateTimeFormat('en-CA', {
-          timeZone,
-          year: 'numeric',
-          month: '2-digit',
-          day: '2-digit',
-        }).format(new Date(epochMs))
+        const parts = localParts(epochMs, timeZone)
+        return `${parts.year}-${parts.month}-${parts.day}`
       }
       
       /**
@@ -82,12 +77,7 @@ window.__ModuleLoader__.load({
        * @returns {number} hour of day in the zone.
        */
       function hourOf(epochMs, timeZone) {
-        const hour = new Intl.DateTimeFormat('en-GB', {
-          timeZone,
-          hour: '2-digit',
-          hour12: false,
-        }).format(new Date(epochMs))
-        return Number.parseInt(hour === '24' ? '0' : hour, 10)
+        return localParts(epochMs, timeZone).hour
       }
       
       /**
@@ -97,8 +87,60 @@ window.__ModuleLoader__.load({
        * @returns {number} ISO weekday, Monday 1 through Sunday 7.
        */
       function isoWeekdayOf(epochMs, timeZone) {
-        const name = new Intl.DateTimeFormat('en-GB', { timeZone, weekday: 'short' }).format(new Date(epochMs))
-        return { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 7 }[name]
+        return WEEKDAY_INDEX[localParts(epochMs, timeZone).weekday] ?? 1
+      }
+      
+      /** Zone formatters, created once per zone instead of once per call. */
+      const zoneFormatters = new Map()
+      
+      /** Bounded memo of computed local parts, keyed by `zone|epoch`. */
+      const localPartsCache = new Map()
+      
+      /** Cap on the local-parts memo; a build rarely exceeds it and a clear is cheap. */
+      const LOCAL_PARTS_LIMIT = 200_000
+      
+      /** ISO weekday index by short English name. */
+      const WEEKDAY_INDEX = { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 7 }
+      
+      /**
+       * Resolve one instant's local calendar parts in a zone.
+       *
+       * `Intl.DateTimeFormat` construction is expensive (it resolves zone data), so a
+       * formatter is cached per zone and results are memoized: a payload build formats
+       * every call, and constructing a formatter per call made the build take seconds.
+       * @param {number} epochMs - instant.
+       * @param {string} timeZone - IANA zone.
+       * @returns {{year: string, month: string, day: string, hour: number, weekday: string}} local parts.
+       */
+      function localParts(epochMs, timeZone) {
+        const cacheKey = `${timeZone}|${epochMs}`
+        const cached = localPartsCache.get(cacheKey)
+        if (cached !== undefined) return cached
+        let formatter = zoneFormatters.get(timeZone)
+        if (formatter === undefined) {
+          formatter = new Intl.DateTimeFormat('en-GB', {
+            timeZone,
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            hour12: false,
+            weekday: 'short',
+          })
+          zoneFormatters.set(timeZone, formatter)
+        }
+        const values = {}
+        for (const part of formatter.formatToParts(new Date(epochMs))) values[part.type] = part.value
+        const parts = {
+          year: values.year ?? '1970',
+          month: values.month ?? '01',
+          day: values.day ?? '01',
+          hour: values.hour === '24' ? 0 : Number.parseInt(values.hour ?? '0', 10),
+          weekday: values.weekday ?? 'Mon',
+        }
+        if (localPartsCache.size >= LOCAL_PARTS_LIMIT) localPartsCache.clear()
+        localPartsCache.set(cacheKey, parts)
+        return parts
       }
       
       /**
@@ -237,9 +279,10 @@ window.__ModuleLoader__.load({
        * @param {string} input.timeZone - IANA zone for every calendar bucket.
        * @param {number} [input.days] - trailing day window for the trend; 0 means every day.
        * @param {number} [input.now] - reference instant for the window.
+       * @param {object} [input.insights] - insights options (prices, windows, thresholds).
        * @returns {object} the payload consumed by both renderers.
        */
-      function buildWorkbenchPayload({ calls, sessions, scan, timeZone, days = 30, now = Date.now() }) {
+      function buildWorkbenchPayload({ calls, sessions, scan, timeZone, days = 30, now = Date.now(), insights = {} }) {
         const colors = {}
         const modelTotals = new Map()
         for (const call of calls) {
@@ -479,6 +522,22 @@ window.__ModuleLoader__.load({
                 delta: sumCalls(recent7) - sumCalls(previous7),
               }
       
+        // Recent-window insights (cost, deliverables, unfinished todos, waiting-on-user
+        // sessions, context warnings, weekly report). Prices and thresholds come from
+        // the plugin row; the defaults live in insights.mjs.
+        const insightsPayload = buildInsights({
+          calls,
+          sessions,
+          options: {
+            now,
+            timeZone,
+            prices: insights.prices,
+            windows: insights.windows,
+            contextWarnTokens: insights.contextWarnTokens,
+            showLatency: insights.showLatency,
+          },
+        })
+      
         return {
           generatedAt: Date.now(),
           timeZone,
@@ -539,6 +598,7 @@ window.__ModuleLoader__.load({
           },
           trends,
           heatmap: { max: heatmapMax, grid: heatmap, byModel: heatmapByModelOut },
+          insights: insightsPayload,
         }
       }
       
@@ -793,6 +853,46 @@ window.__ModuleLoader__.load({
           activeBody,
         ])
       
+        // --- insights sections: built from payload.insights, hidden when absent ---
+        const waitingPart = insightSection(doc, '等你确认')
+        const contextPart = insightSection(doc, '上下文提醒')
+        const overviewPart = insightSection(doc, '近 7 天概览')
+        const todosPart = insightSection(doc, '未完成待办')
+        const deliverablesPart = insightSection(doc, '最近交付')
+        const insightParts = {
+          waiting: waitingPart,
+          context: contextPart,
+          overview: overviewPart,
+          todos: todosPart,
+          deliverables: deliverablesPart,
+        }
+      
+        const heatSection = el(doc, 'section', { className: 'wb-section' }, [
+          el(doc, 'div', { className: 'wb-section-head' }, [
+            el(doc, 'h2', { className: 'wb-h2', text: '调用热力图' }),
+            heatSelect,
+          ]),
+          heatLegend,
+          heatMeta,
+          heatChart,
+        ])
+        const trendSection = el(doc, 'section', { className: 'wb-section' }, [
+          el(doc, 'div', { className: 'wb-section-head' }, [
+            el(doc, 'h2', { className: 'wb-h2', text: '每日趋势' }),
+            trendBar,
+          ]),
+          legend,
+          trendChart,
+        ])
+        const latencySection = el(doc, 'section', { className: 'wb-section' }, [
+          el(doc, 'div', { className: 'wb-section-head' }, [
+            el(doc, 'h2', { className: 'wb-h2', text: '延迟趋势' }),
+            latencyBar,
+          ]),
+          latencyChart,
+        ])
+        const showLatency = !(current.insights !== undefined && current.insights !== null && current.insights.showLatency === false)
+      
         host.replaceChildren(
           el(doc, 'header', { className: 'wb-header' }, [
             el(doc, 'div', { className: 'wb-title-wrap' }, [
@@ -805,32 +905,16 @@ window.__ModuleLoader__.load({
             el(doc, 'div', { className: 'wb-header-actions' }, [refreshButton]),
           ]),
           activeSection,
+          waitingPart.section,
+          contextPart.section,
           status,
           kpis,
-          el(doc, 'section', { className: 'wb-section' }, [
-            el(doc, 'div', { className: 'wb-section-head' }, [
-              el(doc, 'h2', { className: 'wb-h2', text: '调用热力图' }),
-              heatSelect,
-            ]),
-            heatLegend,
-            heatMeta,
-            heatChart,
-          ]),
-          el(doc, 'section', { className: 'wb-section' }, [
-            el(doc, 'div', { className: 'wb-section-head' }, [
-              el(doc, 'h2', { className: 'wb-h2', text: '每日趋势' }),
-              trendBar,
-            ]),
-            legend,
-            trendChart,
-          ]),
-          el(doc, 'section', { className: 'wb-section' }, [
-            el(doc, 'div', { className: 'wb-section-head' }, [
-              el(doc, 'h2', { className: 'wb-h2', text: '延迟趋势' }),
-              latencyBar,
-            ]),
-            latencyChart,
-          ]),
+          overviewPart.section,
+          todosPart.section,
+          deliverablesPart.section,
+          heatSection,
+          trendSection,
+          ...(showLatency ? [latencySection] : []),
           coverage,
         )
       
@@ -838,12 +922,99 @@ window.__ModuleLoader__.load({
         function paint() {
           paintStatus()
           paintKpis()
+          paintInsights()
           paintLegend()
           paintHeatOptions()
           drawTrend()
           drawLatency()
           drawHeatmap()
           paintCoverage()
+        }
+      
+        /**
+         * Paint the insight sections from `current.insights`. Empty lists hide their
+         * section entirely, so the page never grows a column of "nothing to report".
+         */
+        function paintInsights() {
+          const insights = current.insights
+          if (insights === null || insights === undefined || typeof insights !== 'object') {
+            for (const part of Object.values(insightParts)) part.section.hidden = true
+            return
+          }
+          const timeZone = current.timeZone
+          const now = Date.now()
+          renderInsightList(insightParts.waiting, doc, insights.waiting, (item) =>
+            insightRow(doc, {
+              tone: item.kind === 'approval' ? 'waiting' : 'warn',
+              title: item.title,
+              detail: item.kind === 'approval' ? `等你批准：${item.toolName ?? '工具'}` : '等你回答一个问题',
+              extra: item.reason,
+              meta: [`已等待 ${formatDuration(item.ageMs ?? 0)}`, item.cwd],
+            }),
+          )
+          renderInsightList(insightParts.context, doc, insights.context, (item) =>
+            insightRow(doc, {
+              tone: 'warn',
+              title: item.title,
+              detail: `上下文 ${formatTokensShort(item.usedTokens)}（建议上限 ${formatTokensShort(item.warnTokens ?? 200_000)}）`,
+              extra: '建议开新会话或压缩历史，否则会变慢变贵',
+              meta: [item.model],
+            }),
+          )
+          renderInsightList(insightParts.todos, doc, insights.todos, (item) =>
+            insightRow(doc, {
+              tone: 'idle',
+              title: item.title,
+              detail: `未完成 ${Math.max(0, (item.total ?? 0) - (item.completed ?? 0))}/${item.total ?? 0} 项`,
+              extra: (item.items ?? []).map((entry) => `${entry.status === 'in_progress' ? '▶ ' : '· '}${entry.content}`).join('\n'),
+              meta: [`最后活动 ${formatAge(Math.max(0, now - (item.lastEventAt ?? 0)))}`, item.cwd],
+              multiline: true,
+            }),
+          )
+          renderInsightList(insightParts.deliverables, doc, insights.deliverables, (item) =>
+            insightRow(doc, {
+              tone: 'idle',
+              title: item.name ?? item.path,
+              detail: item.description ?? item.path,
+              meta: [item.title, formatShortInstant(item.at, timeZone)],
+            }),
+          )
+          paintOverview()
+        }
+      
+        /** Paint the cost + weekly-report overview. */
+        function paintOverview() {
+          const insights = current.insights
+          const cost = insights?.cost
+          const part = insightParts.overview
+          if (cost === null || cost === undefined || typeof cost !== 'object') {
+            part.section.hidden = true
+            return
+          }
+          part.section.hidden = false
+          const days = insights.windowDays ?? 7
+          part.count.textContent = `近 ${days} 天 · 估算`
+          const tokens = cost.tokens ?? {}
+          const tokenTotal = (tokens.input ?? 0) + (tokens.output ?? 0) + (tokens.cacheRead ?? 0) + (tokens.cacheWrite ?? 0)
+          const kpis = el(doc, 'div', { className: 'wb-kpis wb-kpis-insight' }, [
+            insightKpi(doc, '调用次数', String(cost.calls ?? 0), `已定价 ${cost.pricedCalls ?? 0} 次`),
+            insightKpi(doc, 'Token', formatTokensShort(tokenTotal), `输出 ${formatTokensShort(tokens.output ?? 0)}`),
+            insightKpi(doc, '估算花费', formatMoneyShort(cost.total ?? 0), cost.unpricedCalls > 0 ? `另 ${cost.unpricedCalls} 次未定价` : '全部已定价'),
+            insightKpi(doc, '缓存已省', formatMoneyShort(cost.saved ?? 0), `缓存读取 ${formatTokensShort(tokens.cacheRead ?? 0)}`),
+          ])
+          const reportText = typeof insights.reportText === 'string' ? insights.reportText : ''
+          const report = el(doc, 'pre', { className: 'wb-report', text: reportText })
+          const copyButton = el(doc, 'button', { className: 'wb-btn wb-btn-ghost', type: 'button', text: '复制周报' })
+          copyButton.addEventListener('click', () => copyReport(doc, report, reportText, copyButton))
+          const head = el(doc, 'div', { className: 'wb-report-head' }, [
+            el(doc, 'span', { className: 'wb-report-title', text: '一键周报（复制给领导/同事）' }),
+            copyButton,
+          ])
+          const note = el(doc, 'p', {
+            className: 'wb-empty',
+            text: `花费用内置价目表估算（${insights.priceNote ?? '可在插件配置 prices 里修改'}），不代表账单金额。`,
+          })
+          part.body.replaceChildren(kpis, head, report, note)
         }
       
         function paintStatus() {
@@ -1370,6 +1541,167 @@ window.__ModuleLoader__.load({
       }
       
       /**
+       * Build one insight section shell with a title, a count sink, and a body sink.
+       * @param {Document} doc - owner document.
+       * @param {string} title - section title.
+       * @returns {{section: HTMLElement, body: HTMLElement, count: HTMLElement}} parts.
+       */
+      function insightSection(doc, title) {
+        const body = el(doc, 'div', { className: 'wb-insight-body' })
+        const count = el(doc, 'span', { className: 'wb-insight-count' })
+        const section = el(doc, 'section', { className: 'wb-section' }, [
+          el(doc, 'div', { className: 'wb-section-head' }, [el(doc, 'h2', { className: 'wb-h2', text: title }), count]),
+          body,
+        ])
+        return { section, body, count }
+      }
+      
+      /**
+       * Build one small KPI card inside an insight section.
+       * @param {Document} doc - owner document.
+       * @param {string} label - card label.
+       * @param {string} value - card value.
+       * @param {string} hint - card hint line.
+       * @returns {HTMLElement} card element.
+       */
+      function insightKpi(doc, label, value, hint) {
+        return el(doc, 'div', { className: 'wb-kpi' }, [
+          el(doc, 'div', { className: 'wb-kpi-label', text: label }),
+          el(doc, 'div', { className: 'wb-kpi-value', text: value }),
+          el(doc, 'div', { className: 'wb-kpi-hint', text: hint }),
+        ])
+      }
+      
+      /**
+       * Build one insight list row.
+       * @param {Document} doc - owner document.
+       * @param {{tone?: string, title?: string, detail?: string|null, extra?: string|null, meta?: (string|null|undefined)[], multiline?: boolean}} options - row content.
+       * @returns {HTMLElement} row element.
+       */
+      function insightRow(doc, options) {
+        const dotClass =
+          options.tone === 'waiting' ? 'wb-active-dot-waiting' : options.tone === 'warn' ? 'wb-active-dot-waiting' : 'wb-active-dot-idle'
+        const meta = (options.meta ?? []).filter((entry) => typeof entry === 'string' && entry !== '')
+        const children = [
+          el(doc, 'span', { className: `wb-active-dot ${dotClass}` }),
+          el(doc, 'div', { className: 'wb-active-main' }, [
+            el(doc, 'div', { className: 'wb-active-title' }, [el(doc, 'span', { text: options.title ?? '' })]),
+            typeof options.detail === 'string' && options.detail !== '' ? el(doc, 'div', { className: 'wb-active-state', text: options.detail }) : null,
+            typeof options.extra === 'string' && options.extra !== ''
+              ? el(doc, 'div', { className: options.multiline === true ? 'wb-insight-lines' : 'wb-active-todos-active', text: options.extra })
+              : null,
+            meta.length === 0 ? null : el(doc, 'div', { className: 'wb-active-meta-line', text: meta.join(' · ') }),
+          ].filter((node) => node !== null)),
+        ]
+        return el(doc, 'div', { className: 'wb-active-row' }, children)
+      }
+      
+      /**
+       * Fill one insight section with rows, hiding it when the list is empty.
+       * @param {{section: HTMLElement, body: HTMLElement, count: HTMLElement}} part - section parts.
+       * @param {Document} doc - owner document.
+       * @param {object[] | undefined} items - list payload.
+       * @param {(item: object) => HTMLElement} rowFactory - row builder.
+       * @returns {void}
+       */
+      function renderInsightList(part, doc, items, rowFactory) {
+        const list = Array.isArray(items) ? items : []
+        if (list.length === 0) {
+          part.section.hidden = true
+          part.body.replaceChildren()
+          part.count.textContent = ''
+          return
+        }
+        part.section.hidden = false
+        part.count.textContent = `${list.length} 项`
+        part.body.replaceChildren(...list.map((item) => rowFactory(item)))
+      }
+      
+      /**
+       * Format a token count for the insight cards.
+       * @param {number} value - token count.
+       * @returns {string} display text such as "12.3M".
+       */
+      function formatTokensShort(value) {
+        if (!Number.isFinite(value) || value <= 0) return '0'
+        if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
+        if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`
+        return String(Math.round(value))
+      }
+      
+      /**
+       * Format a money estimate.
+       * @param {number} value - amount.
+       * @returns {string} display text such as "¥12.34".
+       */
+      function formatMoneyShort(value) {
+        if (!Number.isFinite(value)) return '¥—'
+        if (value >= 1000) return `¥${(value / 1000).toFixed(2)}K`
+        if (value >= 10) return `¥${value.toFixed(1)}`
+        return `¥${value.toFixed(2)}`
+      }
+      
+      /**
+       * Format an instant as month-day hour:minute.
+       * @param {number} epochMs - instant.
+       * @param {string} timeZone - IANA zone.
+       * @returns {string} short local timestamp.
+       */
+      function formatShortInstant(epochMs, timeZone) {
+        if (!Number.isFinite(epochMs)) return '—'
+        try {
+          return new Intl.DateTimeFormat('zh-CN', {
+            timeZone,
+            month: 'numeric',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+          }).format(new Date(epochMs))
+        } catch {
+          return '—'
+        }
+      }
+      
+      /**
+       * Copy the weekly report text, with a selection fallback for older surfaces.
+       * @param {Document} doc - owner document.
+       * @param {HTMLElement} report - the `<pre>` holding the report.
+       * @param {string} text - report text.
+       * @param {HTMLElement} button - copy button to relabel.
+       * @returns {void}
+       */
+      function copyReport(doc, report, text, button) {
+        const done = () => {
+          button.textContent = '已复制 ✓'
+          setTimeout(() => {
+            button.textContent = '复制周报'
+          }, 2000)
+        }
+        const fallback = () => {
+          try {
+            const view = doc.defaultView
+            const selection = view?.getSelection?.()
+            if (selection !== undefined && selection !== null && typeof doc.createRange === 'function') {
+              const range = doc.createRange()
+              range.selectNodeContents(report)
+              selection.removeAllRanges()
+              selection.addRange(range)
+            }
+            if (typeof doc.execCommand === 'function' && doc.execCommand('copy')) done()
+            else button.textContent = '请手动选中复制'
+          } catch {
+            button.textContent = '请手动选中复制'
+          }
+        }
+        const clipboard = doc.defaultView?.navigator?.clipboard
+        if (clipboard !== undefined && clipboard !== null && typeof clipboard.writeText === 'function') {
+          Promise.resolve(clipboard.writeText(text)).then(done).catch(fallback)
+          return
+        }
+        fallback()
+      }
+      
+      /**
        * Paint the live "正在处理" section from one `/api/active` response.
        *
        * The section element is created by `renderWorkbench`; this function only
@@ -1603,6 +1935,17 @@ window.__ModuleLoader__.load({
       .wb-active-job { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 12px; color: var(--wb-dim); }
       .wb-active-job-kind { color: var(--wb-fg); }
       .wb-active-warn { color: #f0a13a; font-size: 11px; margin: 0; }
+      .wb-kpis-insight { margin-bottom: 8px; }
+      .wb-insight-count { color: var(--wb-dim); font-size: 12px; }
+      .wb-insight-body { display: flex; flex-direction: column; gap: 6px; }
+      .wb-insight-lines { color: var(--wb-fg); font-size: 11px; margin-top: 3px; white-space: pre-wrap; line-height: 1.6; }
+      .wb-report-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 10px 0 6px; }
+      .wb-report-title { color: var(--wb-dim); font-size: 12px; }
+      .wb-report {
+        margin: 0; padding: 10px 12px; border: 1px dashed var(--wb-border); border-radius: 10px;
+        background: var(--wb-card); color: var(--wb-fg); white-space: pre-wrap; word-break: break-word;
+        font: 12px/1.7 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
       .wb-compact { padding: 12px; gap: 12px; }
       .wb-compact .wb-kpis { grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
       .wb-compact .wb-title { font-size: 17px; }

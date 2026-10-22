@@ -105,6 +105,21 @@ export function registerRoutes(ctx, config) {
   const activeInflight = new Map()
   let activeError = null
 
+  // Insights configuration: estimated prices (CNY per million tokens), window
+  // sizes in days, the context-warning threshold, and whether the latency chart
+  // still gets drawn.
+  const prices = config.prices !== null && typeof config.prices === 'object' ? config.prices : undefined
+  const insightWindows = {
+    cost: clampInt(config.costDays, 7, 1, 365),
+    todo: clampInt(config.todoDays, 14, 1, 365),
+    deliverable: clampInt(config.deliverableDays, 14, 1, 365),
+    waiting: clampInt(config.waitingDays, 3, 1, 90),
+    context: clampInt(config.contextDays, 2, 1, 90),
+  }
+  const contextWarnTokens = clampInt(config.contextWarnTokens, 200_000, 20_000, 2_000_000)
+  const latencyEnabled = config.latencyEnabled === true
+  const insightsOptions = { prices, windows: insightWindows, contextWarnTokens, showLatency: latencyEnabled }
+
   /**
    * Tracker for one idle window.
    * @param {number} idleMinutes - trailing activity window.
@@ -156,7 +171,7 @@ export function registerRoutes(ctx, config) {
   const ensure = async (days, force) => {
     if (!force && cached !== null && cached.days === days && Date.now() - cached.at < STALE_MS) return cached.value
     if (inflight !== null) return inflight
-    inflight = collectWorkbench({ dshHome, timeZone, days, cachePath: config.cachePath })
+    inflight = collectWorkbench({ dshHome, timeZone, days, cachePath: config.cachePath, insights: insightsOptions })
       .then((value) => {
         cached = { at: Date.now(), days, value }
         lastStats = value.stats
@@ -275,6 +290,12 @@ export function registerRoutes(ctx, config) {
           showToolTarget,
           trackers: trackerStats,
           lastError: activeError,
+        },
+        insights: {
+          windows: insightWindows,
+          contextWarnTokens,
+          latencyEnabled,
+          pricesConfigured: Object.keys(prices ?? {}).length,
         },
       })
     },

@@ -289,3 +289,138 @@ test('the page falls back to the embedded snapshot when the route fails', async 
   assert.ok(react.hooks.states.includes('ready'), 'fallback still yields a rendered page')
   assert.ok(container.querySelectorAll('.wb-heat-cell').length > 0, 'heatmap rendered from the embedded snapshot')
 })
+
+/** Sample insights block with one entry in every list. */
+function sampleInsights() {
+  const now = Date.now()
+  return {
+    windowDays: 7,
+    currency: 'CNY',
+    priceNote: '全部调用均已配置价格',
+    cost: {
+      total: 12.34,
+      saved: 5.6,
+      calls: 120,
+      pricedCalls: 118,
+      unpricedCalls: 2,
+      tokens: { input: 100_000, output: 20_000, cacheRead: 1_000_000, cacheWrite: 0 },
+      byModel: [],
+      unpricedModels: [],
+    },
+    topSessions: [],
+    waiting: [{ sessionId: 's1', title: '发版公告整理', cwd: 'E:\\项目', kind: 'approval', toolName: 'pwsh', reason: 'escalate sandbox', since: now - 60_000, ageMs: 60_000 }],
+    todos: [
+      {
+        sessionId: 's2',
+        title: '慢查询治理',
+        cwd: 'E:\\项目',
+        total: 5,
+        completed: 3,
+        items: [
+          { content: '跑测试', status: 'in_progress' },
+          { content: '打包', status: 'pending' },
+        ],
+        lastEventAt: now - 3_600_000,
+      },
+    ],
+    deliverables: [{ path: 'E:\\项目\\报告.md', name: '报告.md', description: '季度报告', sessionId: 's2', title: '慢查询治理', at: now - 7_200_000 }],
+    context: [
+      {
+        sessionId: 's1',
+        title: '发版公告整理',
+        cwd: 'E:\\项目',
+        usedTokens: 240_000,
+        warnTokens: 200_000,
+        maxTokens: 256_000,
+        ratio: 1.2,
+        model: 'deepseek-official/deepseek-flash',
+        at: now - 60_000,
+      },
+    ],
+    counts: { waiting: 1, todos: 1, deliverables: 1, context: 1 },
+    showLatency: false,
+    reportText: '【AI 使用周报】2026-10-15 ~ 2026-10-22\n· 调用 120 次\n· 估算花费 ¥12.3',
+  }
+}
+
+/**
+ * Mount the panel against a payload and return the container plus the header titles.
+ * @param {object} payload - summary payload (insights included or omitted).
+ * @returns {Promise<{container: object, headings: string[], buttons: object[]}>} rendered page facts.
+ */
+async function renderPanel(payload) {
+  const activeStub = { enabled: true, refreshMs: 10000, generatedAt: Date.now(), counts: {}, sessions: [], jobs: [], warnings: [] }
+  const fetchStub = async (url) => {
+    if (url.endsWith('/api/active')) return { ok: true, status: 200, json: async () => activeStub }
+    return { ok: true, status: 200, json: async () => payload }
+  }
+  const { component, registrations, react, ctx } = loadClient({ fetch: fetchStub })
+  component.apply(ctx)
+  const page = registrations.find((entry) => entry.spec.name === 'main')
+  const doc = new ShimDocument()
+  const container = doc.createElement('div')
+  container.clientWidth = 900
+  react.reset()
+  resetCursor(react)
+  const props = page.component()
+  assert.ok(props !== null)
+  const refHolder = react.hooks.refs.find((ref) => ref !== undefined)
+  refHolder.current = container
+  react.flushEffects()
+  await new Promise((resolve) => setTimeout(resolve, 30))
+  const headings = container
+    .querySelectorAll('section')
+    .filter((section) => section.hidden !== true)
+    .map((section) => section.querySelector('h2')?.textContent)
+    .filter((title) => title !== undefined && title !== null)
+  const buttons = container.querySelectorAll('.wb-btn')
+  return { container, headings, buttons }
+}
+
+test('insight sections render cost, report, waiting, context, todos and deliverables', async () => {
+  const payload = JSON.parse(readFileSync(join(here, '..', 'out', 'workbench.json'), 'utf8'))
+  payload.insights = sampleInsights()
+  const { container, headings, buttons } = await renderPanel(payload)
+
+  assert.ok(headings.includes('等你确认'), 'waiting section is shown')
+  assert.ok(headings.includes('上下文提醒'), 'context section is shown')
+  assert.ok(headings.includes('近 7 天概览'), 'overview section is shown')
+  assert.ok(headings.includes('未完成待办'), 'todo section is shown')
+  assert.ok(headings.includes('最近交付'), 'deliverables section is shown')
+  assert.ok(!headings.includes('延迟趋势'), 'the latency chart is hidden by default')
+
+  const report = container.querySelector('.wb-report')
+  assert.ok(report !== null, 'the weekly report block exists')
+  assert.ok(report.textContent.includes('AI 使用周报'))
+  assert.ok(buttons.some((button) => button.textContent === '复制周报'), 'the copy button exists')
+
+  const states = container.querySelectorAll('.wb-active-state').map((node) => node.textContent)
+  assert.ok(states.some((text) => text.includes('等你批准')), 'waiting wording is rendered')
+  assert.ok(states.some((text) => text.includes('上下文 240.0K')), 'context wording is rendered')
+  assert.ok(states.some((text) => text.includes('未完成 2/5')), 'todo wording is rendered')
+
+  const titles = container.querySelectorAll('.wb-active-title').map((node) => node.querySelectorAll('span').map((span) => span.textContent).join(' '))
+  assert.ok(titles.some((text) => text.includes('报告.md')), 'deliverable name is rendered')
+})
+
+test('empty insight lists hide their sections; missing insights keep the latency chart', async () => {
+  const payload = JSON.parse(readFileSync(join(here, '..', 'out', 'workbench.json'), 'utf8'))
+  const insights = sampleInsights()
+  insights.waiting = []
+  insights.todos = []
+  insights.deliverables = []
+  insights.context = []
+  insights.counts = { waiting: 0, todos: 0, deliverables: 0, context: 0 }
+  payload.insights = insights
+  const empty = await renderPanel(payload)
+  assert.ok(empty.headings.includes('近 7 天概览'), 'the overview still renders with zero counts')
+  assert.ok(!empty.headings.includes('等你确认'), 'empty waiting section is hidden')
+  assert.ok(!empty.headings.includes('未完成待办'), 'empty todo section is hidden')
+  assert.ok(!empty.headings.includes('最近交付'), 'empty deliverables section is hidden')
+
+  delete payload.insights
+  const legacy = await renderPanel(payload)
+  assert.ok(legacy.headings.includes('延迟趋势'), 'a payload without insights keeps the latency chart')
+  assert.ok(!legacy.headings.includes('近 7 天概览'), 'no overview without insights')
+})
+

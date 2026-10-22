@@ -25,6 +25,10 @@ import { basename } from 'node:path'
 import { zstdDecompressSync } from 'node:zlib'
 import { scanZstdFrames } from './zstd-frames.mjs'
 import { listSessionArtifacts } from './collect.mjs'
+import { maskText, truncate } from './redact.mjs'
+
+/** Re-exported so callers (and tests) keep one masking entry point. */
+export { maskText } from './redact.mjs'
 
 /** Zstandard frame magic number, little endian on disk. */
 const ZSTD_MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd])
@@ -76,13 +80,6 @@ export const TOOL_LABELS = {
 }
 
 /** Secret shapes that must never reach the browser, even when previews are on. */
-const SECRET_PATTERNS = [
-  [/github_pat_[A-Za-z0-9_]{10,}/g, 'github_pat_***'],
-  [/gh[pousr]_[A-Za-z0-9_]{10,}/g, 'gh*_***'],
-  [/sk-[A-Za-z0-9_-]{12,}/g, 'sk-***'],
-  [/AKIA[0-9A-Z]{12,}/g, 'AKIA***'],
-  [/\b[A-Za-z0-9_+/=-]{40,}\b/g, '***'],
-]
 
 /**
  * Read a byte range without loading the whole file.
@@ -306,29 +303,6 @@ export function summarizeTodos(todos) {
     }
   }
   return { total: todos.length, completed, inProgress }
-}
-
-/**
- * Truncate text for display.
- * @param {string} text - input text.
- * @param {number} max - maximum length.
- * @returns {string} truncated text.
- */
-function truncate(text, max) {
-  const oneLine = text.replace(/\s+/g, ' ').trim()
-  return oneLine.length <= max ? oneLine : `${oneLine.slice(0, Math.max(1, max - 1))}…`
-}
-
-/**
- * Remove credential-shaped substrings from free text.
- * @param {string} text - raw text.
- * @param {number} max - maximum output length.
- * @returns {string} masked text.
- */
-export function maskText(text, max = 60) {
-  let masked = String(text)
-  for (const [pattern, replacement] of SECRET_PATTERNS) masked = masked.replace(pattern, replacement)
-  return truncate(masked, max)
 }
 
 /**

@@ -2,8 +2,8 @@
 
 在 DSH 里加一个「工作台」侧边栏页面：**只统计语言模型调用**。页面分两个 tab：
 
-- **概览**：正在处理实时状态（会话/工具/批准/后台任务/待办）、汇总卡片、调用热力图、每日趋势；延迟趋势默认隐藏，需要时用 `latencyEnabled: true` 打开。
-- **花费与产出**：等你确认、上下文提醒、近 7 天概览（花费估算 + 一键周报）、未完成待办、最近交付。切换 tab 后保持选中，30 秒刷新数据不会跳回；有等待或上下文提醒时 tab 上带数字角标。
+- **概览**：正在处理实时状态（会话/工具/批准/后台任务/待办）、汇总卡片、近 7 天花费卡片（调用次数/Token/估算花费/缓存已省）、调用热力图、每日趋势；延迟趋势默认隐藏，需要时用 `latencyEnabled: true` 打开。
+- **花费与产出**：一键周报（可直接复制）、等你确认、上下文提醒、未完成待办、最近交付。切换 tab 后保持选中，30 秒刷新数据不会跳回；有等待或上下文提醒时 tab 上带数字角标。
 
 - 数据来源：`$DSH_HOME/sessions/**/session*.jsonl.zstd` 会话日志，直接解析，不依赖任何其他插件。
 - 统计口径：`step/start → step/end` 之间调用了语言模型的那一步记 1 次调用；会话标题、联网搜索等辅助模型调用不计入。
@@ -14,8 +14,8 @@
 
 ```bash
 # 1. 拿到包（二选一）
-#    a) 本地 tarball：把 dsh-workbench-panel-1.3.2.tgz 发给对方
-npx -y @deepseek-ai/dsh plugin --profile web add ./dsh-workbench-panel-1.3.2.tgz
+#    a) 本地 tarball：把 dsh-workbench-panel-1.3.3.tgz 发给对方
+npx -y @deepseek-ai/dsh plugin --profile web add ./dsh-workbench-panel-1.3.3.tgz
 
 #    b) 已发布到 npm：直接用包名
 npx -y @deepseek-ai/dsh plugin --profile web add @dsh-workbench/panel
@@ -29,7 +29,7 @@ launchctl kickstart -k gui/$(id -u)/ai.openclaw.dsh-rc8   # macOS launchd 启动
 
 打开后侧边栏会出现「工作台」入口（英文界面显示 Workbench），点开就是面板。
 
-> tarball 的文件名不含 scope：`@dsh-workbench/panel@1.3.2` 打包出来是 `dsh-workbench-panel-1.3.2.tgz`，这是 npm 的规则，不是漏字。
+> tarball 的文件名不含 scope：`@dsh-workbench/panel@1.3.3` 打包出来是 `dsh-workbench-panel-1.3.3.tgz`，这是 npm 的规则，不是漏字。
 
 ### 如果 `dsh plugin add` 报 pnpm 错误
 
@@ -40,7 +40,7 @@ launchctl kickstart -k gui/$(id -u)/ai.openclaw.dsh-rc8   # macOS launchd 启动
 ```bash
 # a) 先在 profile 目录里对齐一次，再重试
 cd ~/.dsh/profiles/web && pnpm install --config.public-hoist-pattern='*'
-npx -y @deepseek-ai/dsh plugin --profile web add ./dsh-workbench-panel-1.3.2.tgz
+npx -y @deepseek-ai/dsh plugin --profile web add ./dsh-workbench-panel-1.3.3.tgz
 
 # b) 手工接线（不跑 pnpm）
 #    注意 scope 目录要一起建，软链名是 @dsh-workbench/panel

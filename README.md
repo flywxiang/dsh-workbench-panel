@@ -2,6 +2,8 @@
 
 DSH（DeepSeek Harness）的「工作台」插件：**只统计语言模型调用**，把调用热力图、每日趋势和延迟趋势放进侧边栏面板，同时提供一个可离线打开的单文件仪表盘。
 
+页面顶部还有一块**「正在处理」实时状态**（1.2.0 新增）：此刻有哪些会话在跑、是在等模型还是在跑工具、有没有等你批准、后台任务、智能体待办做到第几项——默认 10 秒刷新一次，默认不显示命令内容。
+
 零第三方依赖——宿主半边只用 Node 内置模块，浏览器半边是预构建产物。
 
 ## 装插件
@@ -9,7 +11,7 @@ DSH（DeepSeek Harness）的「工作台」插件：**只统计语言模型调�
 想用的人**不需要 clone 这个仓库**，直接装 Release 里的 tgz：
 
 ```bash
-npx -y @deepseek-ai/dsh plugin --profile web add ./dsh-workbench-panel-1.1.1.tgz
+npx -y @deepseek-ai/dsh plugin --profile web add ./dsh-workbench-panel-1.2.0.tgz
 launchctl kickstart -k gui/$(id -u)/ai.openclaw.dsh-rc8
 ```
 
@@ -31,7 +33,7 @@ cache/     会话解析缓存，含真实对话数据（已 gitignore）
 
 ```bash
 node tools/build.mjs            # 采集 + 生成独立仪表盘 + 重建插件 bundle
-node --test tools/*.test.mjs    # 跑测试（14 个）
+node --test tools/*.test.mjs    # 跑测试（30 个）
 node tools/pack.mjs             # npm pack 出 dist/dsh-workbench-panel-<version>.tgz
 ```
 
@@ -61,6 +63,8 @@ launchctl kickstart -k gui/$(id -u)/ai.openclaw.dsh-rc8
 - 每日趋势跟随插件行的 `days` 配置（默认 60 天）。
 - **调用热力图固定展示最近 365 天**，不跟随 `days`——9 列的图看不出节奏，53 列才是贡献图该有的样子。
 - 热力图**按卡片宽度自适应**：列间距跟着容器实际宽度计算，宽屏格子更大、铺满整张卡片，窄屏不会溢出。
+- **「正在处理」实时状态**同样从会话日志推导：回合/步骤/工具/批准/重试/后台任务/待办各自按事件配对，只读增量（默认 10 秒一次），不影响上面的历史统计。
+- 实时状态默认**不显示命令与参数**（日志里的工具参数可能含令牌、密码、SQL），只显示工具名、状态、时长和待办标题。
 
 ## License
 

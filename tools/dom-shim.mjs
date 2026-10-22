@@ -129,11 +129,18 @@ export class ShimElement {
     return out
   }
 
-  /** @param {string} selector - a tag name, `.class`, or `[attribute]` selector. */
+  /** @param {string} selector - a tag name, `.class`, or `[attribute]` / `[attribute="value"]`. */
   querySelectorAll(selector) {
     if (selector.startsWith('[') && selector.endsWith(']')) {
-      const name = selector.slice(1, -1)
-      return this.descendants().filter((node) => node.getAttribute(name) !== undefined)
+      const inner = selector.slice(1, -1)
+      const match = /^([A-Za-z0-9_:.-]+)\s*(?:=\s*["']?([^"']*)["']?)?$/u.exec(inner)
+      if (match !== null) {
+        const name = match[1]
+        const expected = match[2]
+        return this.descendants().filter((node) =>
+          expected === undefined ? node.getAttribute(name) !== undefined : node.getAttribute(name) === expected,
+        )
+      }
     }
     if (selector.startsWith('.')) {
       return this.descendants().filter((node) => node.classList.contains(selector.slice(1)))

@@ -344,9 +344,9 @@ function sampleInsights() {
 }
 
 /**
- * Mount the panel against a payload and return the container plus the header titles.
+ * Mount the panel against a payload and expose the visible headings plus tab helpers.
  * @param {object} payload - summary payload (insights included or omitted).
- * @returns {Promise<{container: object, headings: string[], buttons: object[]}>} rendered page facts.
+ * @returns {Promise<{container: object, headings: () => string[], tabs: object[], clickTab: (label: string) => void, buttons: object[]}>} rendered page facts.
  */
 async function renderPanel(payload) {
   const activeStub = { enabled: true, refreshMs: 10000, generatedAt: Date.now(), counts: {}, sessions: [], jobs: [], warnings: [] }
@@ -368,26 +368,56 @@ async function renderPanel(payload) {
   refHolder.current = container
   react.flushEffects()
   await new Promise((resolve) => setTimeout(resolve, 30))
-  const headings = container
-    .querySelectorAll('section')
-    .filter((section) => section.hidden !== true)
-    .map((section) => section.querySelector('h2')?.textContent)
-    .filter((title) => title !== undefined && title !== null)
-  const buttons = container.querySelectorAll('.wb-btn')
-  return { container, headings, buttons }
+
+  /** Headings of sections that are actually visible (tab and list visibility). */
+  const headings = () => {
+    const panels = container.querySelectorAll('.wb-tab-panel')
+    const sections =
+      panels.length > 0
+        ? panels.filter((panel) => panel.hidden !== true).flatMap((panel) => panel.querySelectorAll('section'))
+        : container.querySelectorAll('section')
+    return sections
+      .filter((section) => section.hidden !== true)
+      .map((section) => section.querySelector('h2')?.textContent)
+      .filter((title) => title !== undefined && title !== null)
+  }
+  const tabs = container.querySelectorAll('.wb-tab')
+  /** Full label text (the shim does not aggregate child text into textContent). */
+  const labelOf = (node) => [node.textContent, ...node.querySelectorAll('span').map((span) => span.textContent)].join('')
+  const tabFor = (label) => tabs.find((tab) => labelOf(tab).includes(label))
+  const clickTab = (label) => {
+    const button = tabFor(label)
+    assert.ok(button !== undefined, `tab "${label}" exists`)
+    button.dispatch('click')
+  }
+  return { container, headings, tabs, tabFor, clickTab, buttons: container.querySelectorAll('.wb-btn') }
 }
 
-test('insight sections render cost, report, waiting, context, todos and deliverables', async () => {
+test('insight sections live on the second tab and show a badge for alerts', async () => {
   const payload = JSON.parse(readFileSync(join(here, '..', 'out', 'workbench.json'), 'utf8'))
   payload.insights = sampleInsights()
-  const { container, headings, buttons } = await renderPanel(payload)
+  const { container, headings, clickTab, tabFor, buttons } = await renderPanel(payload)
 
-  assert.ok(headings.includes('等你确认'), 'waiting section is shown')
-  assert.ok(headings.includes('上下文提醒'), 'context section is shown')
-  assert.ok(headings.includes('近 7 天概览'), 'overview section is shown')
-  assert.ok(headings.includes('未完成待办'), 'todo section is shown')
-  assert.ok(headings.includes('最近交付'), 'deliverables section is shown')
-  assert.ok(!headings.includes('延迟趋势'), 'the latency chart is hidden by default')
+  assert.ok(headings().includes('调用热力图'), 'the charts tab is shown first')
+  assert.ok(headings().includes('每日趋势'))
+  assert.ok(!headings().includes('近 7 天概览'), 'insight sections stay on the second tab')
+  const insightsPanel = container.querySelector('[data-wb-tab="insights"]')
+  assert.equal(insightsPanel.hidden, true, 'the insights panel starts hidden')
+
+  clickTab('花费与产出')
+  const secondTab = headings()
+  assert.ok(secondTab.includes('等你确认'), 'waiting section is shown')
+  assert.ok(secondTab.includes('上下文提醒'), 'context section is shown')
+  assert.ok(secondTab.includes('近 7 天概览'), 'overview section is shown')
+  assert.ok(secondTab.includes('未完成待办'), 'todo section is shown')
+  assert.ok(secondTab.includes('最近交付'), 'deliverables section is shown')
+  assert.ok(!secondTab.includes('延迟趋势'), 'the latency chart is hidden by default')
+  assert.ok(!secondTab.includes('调用热力图'), 'the charts hide on the second tab')
+
+  const tab = tabFor('花费与产出')
+  const badge = tab.querySelector('.wb-tab-badge')
+  assert.ok(badge !== null && badge.textContent === '2', `badge counts waiting + context, got ${badge?.textContent}`)
+  assert.equal(badge.hidden, false)
 
   const report = container.querySelector('.wb-report')
   assert.ok(report !== null, 'the weekly report block exists')
@@ -403,6 +433,18 @@ test('insight sections render cost, report, waiting, context, todos and delivera
   assert.ok(titles.some((text) => text.includes('报告.md')), 'deliverable name is rendered')
 })
 
+test('switching tabs toggles the panels', async () => {
+  const payload = JSON.parse(readFileSync(join(here, '..', 'out', 'workbench.json'), 'utf8'))
+  payload.insights = sampleInsights()
+  const { headings, clickTab } = await renderPanel(payload)
+  assert.ok(headings().includes('调用热力图'), 'overview first')
+  clickTab('花费与产出')
+  assert.ok(headings().includes('近 7 天概览'), 'second tab shows insights')
+  clickTab('概览')
+  assert.ok(headings().includes('调用热力图'), 'switching back restores the charts tab')
+  assert.ok(!headings().includes('近 7 天概览'))
+})
+
 test('empty insight lists hide their sections; missing insights keep the latency chart', async () => {
   const payload = JSON.parse(readFileSync(join(here, '..', 'out', 'workbench.json'), 'utf8'))
   const insights = sampleInsights()
@@ -413,14 +455,20 @@ test('empty insight lists hide their sections; missing insights keep the latency
   insights.counts = { waiting: 0, todos: 0, deliverables: 0, context: 0 }
   payload.insights = insights
   const empty = await renderPanel(payload)
-  assert.ok(empty.headings.includes('近 7 天概览'), 'the overview still renders with zero counts')
-  assert.ok(!empty.headings.includes('等你确认'), 'empty waiting section is hidden')
-  assert.ok(!empty.headings.includes('未完成待办'), 'empty todo section is hidden')
-  assert.ok(!empty.headings.includes('最近交付'), 'empty deliverables section is hidden')
+  empty.clickTab('花费与产出')
+  assert.ok(empty.headings().includes('近 7 天概览'), 'the overview still renders with zero counts')
+  assert.ok(!empty.headings().includes('等你确认'), 'empty waiting section is hidden')
+  assert.ok(!empty.headings().includes('未完成待办'), 'empty todo section is hidden')
+  assert.ok(!empty.headings().includes('最近交付'), 'empty deliverables section is hidden')
+
+  const tab = empty.tabFor('花费与产出')
+  const badge = tab.querySelector('.wb-tab-badge')
+  assert.equal(badge.hidden, true, 'no alert badge without waiting or context items')
 
   delete payload.insights
   const legacy = await renderPanel(payload)
-  assert.ok(legacy.headings.includes('延迟趋势'), 'a payload without insights keeps the latency chart')
-  assert.ok(!legacy.headings.includes('近 7 天概览'), 'no overview without insights')
+  assert.equal(legacy.tabs.length, 0, 'a payload without insights has no tabs')
+  assert.ok(legacy.headings().includes('延迟趋势'), 'a payload without insights keeps the latency chart')
+  assert.ok(!legacy.headings().includes('近 7 天概览'), 'no overview without insights')
 })
 

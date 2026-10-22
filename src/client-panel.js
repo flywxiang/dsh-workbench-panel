@@ -47,6 +47,9 @@ function parseEmbedded(html) {
  */
 function WorkbenchPanel() {
   const containerRef = React.useRef(null)
+  // Survives the 30-second payload refresh, so the selected tab and chart metric
+  // do not snap back to their defaults on every re-render.
+  const viewStateRef = React.useRef({})
   const [status, setStatus] = React.useState('loading')
   const [error, setError] = React.useState('')
 
@@ -73,6 +76,7 @@ function WorkbenchPanel() {
         refresh: loadPayload,
         compact: true,
         liveActive: true,
+        state: viewStateRef.current,
       })
       paintActive()
     }

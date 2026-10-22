@@ -149,11 +149,13 @@ export function shortModelLabel(label) {
 export function renderWorkbench(host, payload, options = {}) {
   const doc = host.ownerDocument
   let current = payload
-  const state = {
-    trendMetric: 'calls',
-    latencyMetric: 'llmAvgSeconds',
-    heatScope: '__all__',
-  }
+  // Chart/tab choices live in a caller-owned object so a 30-second payload refresh
+  // re-renders the page without yanking the user back to the first tab.
+  const state = options.state ?? {}
+  if (state.trendMetric === undefined) state.trendMetric = 'calls'
+  if (state.latencyMetric === undefined) state.latencyMetric = 'llmAvgSeconds'
+  if (state.heatScope === undefined) state.heatScope = '__all__'
+  if (state.tab !== 'overview' && state.tab !== 'insights') state.tab = 'overview'
 
   host.classList.add('wb-root')
   if (options.compact) host.classList.add('wb-compact')
@@ -276,31 +278,81 @@ export function renderWorkbench(host, payload, options = {}) {
     latencyChart,
   ])
   const showLatency = !(current.insights !== undefined && current.insights !== null && current.insights.showLatency === false)
+  const hasInsights = current.insights !== undefined && current.insights !== null
 
-  host.replaceChildren(
-    el(doc, 'header', { className: 'wb-header' }, [
-      el(doc, 'div', { className: 'wb-title-wrap' }, [
-        el(doc, 'h1', { className: 'wb-title', text: '工作台' }),
-        el(doc, 'p', {
-          className: 'wb-subtitle',
-          text: '仅统计语言模型调用 · 每日趋势与调用热力图',
-        }),
-      ]),
-      el(doc, 'div', { className: 'wb-header-actions' }, [refreshButton]),
-    ]),
+  // Two tabs: the original usage page first, everything the insights block adds
+  // second, so the page stays readable instead of growing one long column.
+  const overviewPanel = el(doc, 'div', { className: 'wb-tab-panel', 'data-wb-tab': 'overview' }, [
     activeSection,
-    waitingPart.section,
-    contextPart.section,
     status,
     kpis,
-    overviewPart.section,
-    todosPart.section,
-    deliverablesPart.section,
     heatSection,
     trendSection,
     ...(showLatency ? [latencySection] : []),
     coverage,
-  )
+  ])
+  const insightsPanel = el(doc, 'div', { className: 'wb-tab-panel', 'data-wb-tab': 'insights' }, [
+    waitingPart.section,
+    contextPart.section,
+    overviewPart.section,
+    todosPart.section,
+    deliverablesPart.section,
+  ])
+  const tabBadge = el(doc, 'span', { className: 'wb-tab-badge', text: '' })
+  tabBadge.hidden = true
+  const tabOverview = el(doc, 'button', { className: 'wb-tab', type: 'button', role: 'tab' }, [
+    el(doc, 'span', { text: '概览' }),
+  ])
+  const tabInsights = el(doc, 'button', { className: 'wb-tab', type: 'button', role: 'tab' }, [
+    el(doc, 'span', { text: '花费与产出' }),
+    tabBadge,
+  ])
+  const tabBar = el(doc, 'div', { className: 'wb-tabs', role: 'tablist' }, [tabOverview, tabInsights])
+  const header = el(doc, 'header', { className: 'wb-header' }, [
+    el(doc, 'div', { className: 'wb-title-wrap' }, [
+      el(doc, 'h1', { className: 'wb-title', text: '工作台' }),
+      el(doc, 'p', {
+        className: 'wb-subtitle',
+        text: '仅统计语言模型调用 · 每日趋势与调用热力图',
+      }),
+    ]),
+    el(doc, 'div', { className: 'wb-header-actions' }, [refreshButton]),
+  ])
+
+  /**
+   * Show one tab and hide the other. Chart widths are measured at draw time, so
+   * switching back to the charts tab redraws them at the real container width.
+   */
+  const applyTab = (redraw) => {
+    const onOverview = state.tab !== 'insights'
+    overviewPanel.hidden = !onOverview
+    insightsPanel.hidden = onOverview
+    tabOverview.classList.toggle('wb-tab-active', onOverview)
+    tabInsights.classList.toggle('wb-tab-active', !onOverview)
+    tabOverview.setAttribute('aria-selected', onOverview ? 'true' : 'false')
+    tabInsights.setAttribute('aria-selected', onOverview ? 'false' : 'true')
+    if (onOverview && redraw === true) {
+      drawTrend()
+      drawLatency()
+      drawHeatmap()
+    }
+  }
+  tabOverview.addEventListener('click', () => {
+    state.tab = 'overview'
+    applyTab(true)
+  })
+  tabInsights.addEventListener('click', () => {
+    state.tab = 'insights'
+    applyTab(false)
+  })
+
+  if (hasInsights) {
+    host.replaceChildren(header, tabBar, overviewPanel, insightsPanel)
+    applyTab(false)
+  } else {
+    // Legacy payload (an older dashboard snapshot) keeps the single-page layout.
+    host.replaceChildren(header, ...overviewPanel.children)
+  }
 
   /** Repaint every region from the current payload and control state. */
   function paint() {
@@ -323,6 +375,7 @@ export function renderWorkbench(host, payload, options = {}) {
     const insights = current.insights
     if (insights === null || insights === undefined || typeof insights !== 'object') {
       for (const part of Object.values(insightParts)) part.section.hidden = true
+      tabBadge.hidden = true
       return
     }
     const timeZone = current.timeZone
@@ -364,6 +417,9 @@ export function renderWorkbench(host, payload, options = {}) {
       }),
     )
     paintOverview()
+    const alerts = (insights.counts?.waiting ?? 0) + (insights.counts?.context ?? 0)
+    tabBadge.hidden = alerts === 0
+    tabBadge.textContent = alerts === 0 ? '' : String(alerts)
   }
 
   /** Paint the cost + weekly-report overview. */
@@ -1320,6 +1376,18 @@ export const WORKBENCH_CSS = `
 .wb-active-job-kind { color: var(--wb-fg); }
 .wb-active-warn { color: #f0a13a; font-size: 11px; margin: 0; }
 .wb-kpis-insight { margin-bottom: 8px; }
+.wb-tabs { display: inline-flex; gap: 4px; padding: 3px; border: 1px solid var(--wb-border); border-radius: 999px; background: var(--wb-card); align-self: flex-start; }
+.wb-tab {
+  font: inherit; font-size: 12px; padding: 4px 14px; border: 0; border-radius: 999px;
+  background: transparent; color: var(--wb-dim); cursor: pointer;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.wb-tab:hover { color: var(--wb-fg); }
+.wb-tab-active { background: var(--wb-accent); color: #fff; }
+.wb-tab-badge { font-size: 10px; line-height: 1.4; padding: 0 5px; border-radius: 999px; background: rgba(255, 255, 255, 0.3); }
+.wb-tab-panel { display: flex; flex-direction: column; gap: 16px; }
+.wb-tab-panel[hidden] { display: none; }
+.wb-compact .wb-tab-panel { gap: 12px; }
 .wb-insight-count { color: var(--wb-dim); font-size: 12px; }
 .wb-insight-body { display: flex; flex-direction: column; gap: 6px; }
 .wb-insight-lines { color: var(--wb-fg); font-size: 11px; margin-top: 3px; white-space: pre-wrap; line-height: 1.6; }

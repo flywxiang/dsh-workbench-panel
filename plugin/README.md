@@ -1,6 +1,6 @@
 # DSH 工作台面板（@dsh-workbench/panel）
 
-在 DSH 里加一个「工作台」侧边栏页面：**只统计语言模型调用**。顶部是**「正在处理」实时状态**（会话/工具/批准/后台任务/待办）和汇总卡片，下面依次是**调用热力图**、每日趋势（调用次数 / Token 用量 / 模型耗时 / 响应与首字延迟，按模型分色堆叠）和延迟趋势。
+在 DSH 里加一个「工作台」侧边栏页面：**只统计语言模型调用**。顶部依次是**「正在处理」实时状态**（会话/工具/批准/后台任务/待办）、**等你确认**、**上下文提醒**、**近 7 天概览**（花费估算 + 一键周报）、**未完成待办**、**最近交付**，下面依次是**调用热力图**、每日趋势（调用次数 / Token 用量 / 模型耗时 / 响应与首字延迟，按模型分色堆叠）；延迟趋势默认隐藏，需要时用 `latencyEnabled: true` 打开。
 
 - 数据来源：`$DSH_HOME/sessions/**/session*.jsonl.zstd` 会话日志，直接解析，不依赖任何其他插件。
 - 统计口径：`step/start → step/end` 之间调用了语言模型的那一步记 1 次调用；会话标题、联网搜索等辅助模型调用不计入。
@@ -11,8 +11,8 @@
 
 ```bash
 # 1. 拿到包（二选一）
-#    a) 本地 tarball：把 dsh-workbench-panel-1.2.0.tgz 发给对方
-npx -y @deepseek-ai/dsh plugin --profile web add ./dsh-workbench-panel-1.2.0.tgz
+#    a) 本地 tarball：把 dsh-workbench-panel-1.3.0.tgz 发给对方
+npx -y @deepseek-ai/dsh plugin --profile web add ./dsh-workbench-panel-1.3.0.tgz
 
 #    b) 已发布到 npm：直接用包名
 npx -y @deepseek-ai/dsh plugin --profile web add @dsh-workbench/panel
@@ -26,7 +26,7 @@ launchctl kickstart -k gui/$(id -u)/ai.openclaw.dsh-rc8   # macOS launchd 启动
 
 打开后侧边栏会出现「工作台」入口（英文界面显示 Workbench），点开就是面板。
 
-> tarball 的文件名不含 scope：`@dsh-workbench/panel@1.2.0` 打包出来是 `dsh-workbench-panel-1.2.0.tgz`，这是 npm 的规则，不是漏字。
+> tarball 的文件名不含 scope：`@dsh-workbench/panel@1.3.0` 打包出来是 `dsh-workbench-panel-1.3.0.tgz`，这是 npm 的规则，不是漏字。
 
 ### 如果 `dsh plugin add` 报 pnpm 错误
 
@@ -37,7 +37,7 @@ launchctl kickstart -k gui/$(id -u)/ai.openclaw.dsh-rc8   # macOS launchd 启动
 ```bash
 # a) 先在 profile 目录里对齐一次，再重试
 cd ~/.dsh/profiles/web && pnpm install --config.public-hoist-pattern='*'
-npx -y @deepseek-ai/dsh plugin --profile web add ./dsh-workbench-panel-1.2.0.tgz
+npx -y @deepseek-ai/dsh plugin --profile web add ./dsh-workbench-panel-1.3.0.tgz
 
 # b) 手工接线（不跑 pnpm）
 #    注意 scope 目录要一起建，软链名是 @dsh-workbench/panel
@@ -59,6 +59,14 @@ ln -sfn /绝对路径/到/解压后的/package ~/.dsh/profiles/web/node_modules/
 | `activeIdleMinutes` | `10` | 多久没活动的会话仍列在「正在处理」里（1~120 分钟；期间一直空闲的会话显示为「空闲」） |
 | `activeMaxSessions` | `10` | 最多展示多少个会话（1~50） |
 | `showToolTarget` | `false` | 是否显示脱敏后的工具目标（命令首行/文件名）；**默认关闭**，见下方隐私说明 |
+| `latencyEnabled` | `false` | 是否显示「延迟趋势」图 |
+| `costDays` | `7` | 花费估算与周报的统计窗口（天） |
+| `todoDays` | `14` | 「未完成待办」回溯多少天（天） |
+| `deliverableDays` | `14` | 「最近交付」回溯多少天（天） |
+| `waitingDays` | `3` | 「等你确认」回溯多少天（天） |
+| `contextDays` | `2` | 「上下文提醒」只看最近几天活跃的会话（天） |
+| `contextWarnTokens` | `200000` | 上下文超过多少 token 就提醒（20000~2000000） |
+| `prices` | 内置价目表 | 每百万 token 的估算单价（CNY），见下方「花费计算口径」 |
 
 ## 调用热力图
 
@@ -86,6 +94,26 @@ ln -sfn /绝对路径/到/解压后的/package ~/.dsh/profiles/web/node_modules/
 默认**不显示**命令、参数、工具输出或消息正文，只显示工具名、状态、时长和待办标题。日志里的工具参数可能包含令牌、密码、SQL 正文，所以即使打开 `showToolTarget`，打码也在服务端完成：`github_pat_*`、`ghp_*`、`sk-*`、`AKIA*`、超长随机串、`token=` 类参数一律替换，命令只取首行前 60 字、路径只保留文件名。
 
 该区块只读 `$DSH_HOME/sessions`；独立仪表盘是离线快照，不显示实时状态。
+
+## 花费估算、周报与提醒
+
+这些区块和热力图一样从会话日志推导，不需要额外数据源：
+
+- **近 7 天概览**：调用次数、Token、估算花费、缓存读取省下的钱；下面是「一键周报」，点「复制周报」按钮把整段文字粘给领导/同事。
+- **最近交付**：`deliverables/presented` 事件里的文件，按路径去重（同一文件多次交付只留最近一次），显示文件名、说明、所属会话和时间。
+- **未完成待办**：跨会话汇总最近 `todoDays` 天里没做完的 `todo_write` 清单，卡在哪个会话、还剩哪几项。
+- **等你确认**：最近 `waitingDays` 天里卡在「等你批准」或「等你回答」的会话，附已等待时长。
+- **上下文提醒**：最近 `contextDays` 天活跃的会话，提示词侧（输入 + 缓存读取）超过 `contextWarnTokens`（默认 20 万 token）就提醒「建议开新会话或压缩历史」。
+- **延迟趋势**：默认隐藏；它衡量「每次等多久」（首字延迟 / 整段生成时长），觉得有用再把 `latencyEnabled` 打开。
+
+### 花费计算口径
+
+- 内置一张 CNY/百万 token 的价目表（`src/insights.mjs` 的 `DEFAULT_PRICES`）：`deepseek-flash`、`deepseek-v4-flash`、`deepseek-chat` 按输入 2 元 / 缓存读取 0.5 元 / 输出 8 元；`deepseek-v4-pro`、`deepseek-reasoner` 按输入 4 元 / 缓存读取 1 元 / 输出 16 元。
+- 未精确命中的模型按名称关键词归类（含 `flash`/`economy`/`chat` 走 flash 价，含 `pro`/`reasoner` 走 pro 价）；仍无法归类的标记为「未定价」，单独报数量，**不会假装 0 元**。
+- 可以在插件行用 `prices` 覆盖或新增，例如 `prices: { "kimi-coding/k3": { input: 3, cacheRead: 1, output: 12 } }`（单位：元 / 百万 token）。
+- 「缓存已省」= 缓存读取 token ×（输入单价 − 缓存读取单价），是相对「全部按输入价计费」的差额。
+- **这是估算，不是账单**：价格会变、推理模型可能另有计费规则，界面上标注「估算」。
+- **隐私**：交付物只显示文件路径/文件名（为了让你能找到文件），路径里的令牌形态串同样会打码；不显示文件内容。
 
 ## HTTP 路由
 

@@ -1,8 +1,12 @@
 # dsh-workbench
 
-DSH（DeepSeek Harness）的「工作台」插件：**只统计语言模型调用**，把调用热力图、每日趋势和延迟趋势放进侧边栏面板，同时提供一个可离线打开的单文件仪表盘。
+DSH（DeepSeek Harness）的「工作台」插件：**只统计语言模型调用**，把调用热力图、每日趋势放进侧边栏面板，同时提供一个可离线打开的单文件仪表盘。
 
-页面顶部还有一块**「正在处理」实时状态**（1.2.0 新增）：此刻有哪些会话在跑、是在等模型还是在跑工具、有没有等你批准、后台任务、智能体待办做到第几项——默认 10 秒刷新一次，默认不显示命令内容。
+页面顶部还有：
+
+- **「正在处理」实时状态**（1.2.0）：此刻有哪些会话在跑、是在等模型还是在跑工具、有没有等你批准、后台任务、智能体待办做到第几项——默认 10 秒刷新一次，默认不显示命令内容。
+- **等你确认 / 上下文提醒 / 近 7 天概览 / 未完成待办 / 最近交付**（1.3.0）：卡在等你批准或回答的会话、上下文快爆的会话、按内置价目表估算的花费与缓存节省、跨会话的未完成待办、最近产出并交付的文件，以及一键复制粘贴的周报文字。
+- 延迟趋势默认隐藏（`latencyEnabled: true` 可打开）。
 
 零第三方依赖——宿主半边只用 Node 内置模块，浏览器半边是预构建产物。
 
@@ -11,7 +15,7 @@ DSH（DeepSeek Harness）的「工作台」插件：**只统计语言模型调�
 想用的人**不需要 clone 这个仓库**，直接装 Release 里的 tgz：
 
 ```bash
-npx -y @deepseek-ai/dsh plugin --profile web add ./dsh-workbench-panel-1.2.0.tgz
+npx -y @deepseek-ai/dsh plugin --profile web add ./dsh-workbench-panel-1.3.0.tgz
 launchctl kickstart -k gui/$(id -u)/ai.openclaw.dsh-rc8
 ```
 
@@ -33,7 +37,7 @@ cache/     会话解析缓存，含真实对话数据（已 gitignore）
 
 ```bash
 node tools/build.mjs            # 采集 + 生成独立仪表盘 + 重建插件 bundle
-node --test tools/*.test.mjs    # 跑测试（30 个）
+node --test tools/*.test.mjs    # 跑测试（41 个）
 node tools/pack.mjs             # npm pack 出 dist/dsh-workbench-panel-<version>.tgz
 ```
 
@@ -65,6 +69,8 @@ launchctl kickstart -k gui/$(id -u)/ai.openclaw.dsh-rc8
 - 热力图**按卡片宽度自适应**：列间距跟着容器实际宽度计算，宽屏格子更大、铺满整张卡片，窄屏不会溢出。
 - **「正在处理」实时状态**同样从会话日志推导：回合/步骤/工具/批准/重试/后台任务/待办各自按事件配对，只读增量（默认 10 秒一次），不影响上面的历史统计。
 - 实时状态默认**不显示命令与参数**（日志里的工具参数可能含令牌、密码、SQL），只显示工具名、状态、时长和待办标题。
+- **花费估算 / 周报 / 交付物 / 未完成待办 / 等你确认 / 上下文提醒**都从同一批会话日志推导（`deliverables/presented`、`todo/write`、`approval/asked`、`assistant/message` usage 等），默认只统计最近 7~14 天；花费按内置价目表估算、未定价模型单独报数量。详见 [`plugin/README.md`](plugin/README.md#花费估算周报与提醒)。
+- **延迟趋势默认隐藏**：它衡量「每次等多久」，觉得有用再用 `latencyEnabled: true` 打开。
 
 ## License
 

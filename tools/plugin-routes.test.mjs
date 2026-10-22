@@ -58,12 +58,13 @@ function fakeResponse() {
   }
 }
 
-test('registerRoutes claims three exact routes under the plugin prefix', () => {
+test('registerRoutes claims the four exact routes under the plugin prefix', () => {
   const ctx = fakeContext()
   registerRoutes(ctx, { dshHome: join(homedir(), '.dsh'), timeZone: 'Asia/Shanghai', days: 60, cachePath: testCache })
   const paths = ctx.routes.map((route) => `${route.kind} ${route.path}`)
   assert.deepEqual(paths, [
     `exact ${BASE_PATH}/api/summary`,
+    `exact ${BASE_PATH}/api/active`,
     `exact ${BASE_PATH}/api/health`,
     `exact ${BASE_PATH}/dashboard.html`,
   ])
@@ -113,4 +114,53 @@ test('the health route reports collection accounting', async () => {
   assert.equal(body.timeZone, 'Asia/Shanghai')
   assert.equal(body.defaultDays, 7)
   assert.ok(body.cached === null || typeof body.cached.ageMs === 'number')
+  assert.equal(body.active.enabled, true)
+  assert.equal(body.active.idleMinutes, 10)
+  assert.equal(body.active.refreshMs, 10000)
+})
+
+test('the active route answers with live state and degrades safely', async () => {
+  const ctx = fakeContext()
+  registerRoutes(ctx, { dshHome: join(homedir(), '.dsh'), timeZone: 'Asia/Shanghai', days: 7, cachePath: testCache })
+  const active = ctx.routes.find((route) => route.path.endsWith('/api/active'))
+  const res = fakeResponse()
+  await active.handler({ method: 'GET', url: `${BASE_PATH}/api/active` }, res)
+  assert.equal(res.status, 200)
+  assert.match(res.headers['content-type'], /application\/json/)
+  const body = JSON.parse(res.body)
+  assert.equal(body.enabled, true)
+  assert.equal(body.refreshMs, 10000)
+  assert.ok(Array.isArray(body.sessions))
+  assert.ok(Array.isArray(body.jobs))
+  assert.ok(Array.isArray(body.warnings))
+  assert.equal(typeof body.counts.runningTurns, 'number')
+})
+
+test('the active route honours a disabled configuration and rejects other methods', async () => {
+  const ctx = fakeContext()
+  registerRoutes(ctx, { dshHome: join(homedir(), '.dsh'), days: 7, cachePath: testCache, activeEnabled: false })
+  const active = ctx.routes.find((route) => route.path.endsWith('/api/active'))
+  const res = fakeResponse()
+  await active.handler({ method: 'GET', url: `${BASE_PATH}/api/active` }, res)
+  assert.equal(res.status, 200)
+  assert.equal(JSON.parse(res.body).enabled, false)
+
+  const rejected = fakeResponse()
+  await active.handler({ method: 'POST', url: `${BASE_PATH}/api/active` }, rejected)
+  assert.equal(rejected.status, 405)
+})
+
+test('the active route survives a missing sessions directory', async () => {
+  const emptyHome = mkdtempSync(join(tmpdir(), 'wb-empty-home-'))
+  const ctx = fakeContext()
+  registerRoutes(ctx, { dshHome: emptyHome, days: 7, cachePath: testCache })
+  const active = ctx.routes.find((route) => route.path.endsWith('/api/active'))
+  const res = fakeResponse()
+  await active.handler({ method: 'GET', url: `${BASE_PATH}/api/active?idleMinutes=5` }, res)
+  rmSync(emptyHome, { recursive: true, force: true })
+  assert.equal(res.status, 200)
+  const body = JSON.parse(res.body)
+  assert.equal(body.idleMinutes, 5)
+  assert.deepEqual(body.sessions, [])
+  assert.deepEqual(body.jobs, [])
 })

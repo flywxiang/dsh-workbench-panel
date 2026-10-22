@@ -129,12 +129,25 @@ export class ShimElement {
     return out
   }
 
-  /** @param {string} selector - a tag name or `.class` selector. */
+  /** @param {string} selector - a tag name, `.class`, or `[attribute]` selector. */
   querySelectorAll(selector) {
+    if (selector.startsWith('[') && selector.endsWith(']')) {
+      const name = selector.slice(1, -1)
+      return this.descendants().filter((node) => node.getAttribute(name) !== undefined)
+    }
     if (selector.startsWith('.')) {
       return this.descendants().filter((node) => node.classList.contains(selector.slice(1)))
     }
     return this.descendants().filter((node) => node.tagName === selector.toUpperCase())
+  }
+
+  /**
+   * First descendant matching the selector, like the real DOM.
+   * @param {string} selector - a tag name, `.class`, or `[attribute]` selector.
+   * @returns {ShimElement | null} first match or null.
+   */
+  querySelector(selector) {
+    return this.querySelectorAll(selector)[0] ?? null
   }
 
   /** @param {string} type - event type. @param {(event: unknown) => void} handler - listener. */

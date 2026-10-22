@@ -160,8 +160,10 @@ test('apply registers the page and its sidebar entry under one id', () => {
 test('the page mounts charts from the API payload', async () => {
   const payload = JSON.parse(readFileSync(join(here, '..', 'out', 'workbench.json'), 'utf8'))
   const calls = []
+  const activeStub = { enabled: true, refreshMs: 10000, generatedAt: Date.now(), counts: {}, sessions: [], jobs: [], warnings: [] }
   const fetchStub = async (url) => {
     calls.push(url)
+    if (url.endsWith('/api/active')) return { ok: true, status: 200, json: async () => activeStub }
     return { ok: true, status: 200, json: async () => payload }
   }
   const { component, registrations, react, ctx } = loadClient({ fetch: fetchStub })
@@ -194,12 +196,79 @@ test('the page mounts charts from the API payload', async () => {
   )
   assert.ok(container.querySelectorAll('.wb-bar').length > 0, 'trend bars rendered into the container')
   assert.ok(react.hooks.states.includes('ready'), 'status leaves the loading state')
+  assert.ok(container.querySelector('[data-wb-active]') !== null, 'the live section exists')
+  assert.ok(calls.some((url) => url.endsWith('/api/active')), 'the live route is polled')
+})
+
+test('the live section renders running sessions, jobs and todos', async () => {
+  const payload = JSON.parse(readFileSync(join(here, '..', 'out', 'workbench.json'), 'utf8'))
+  const activeStub = {
+    enabled: true,
+    refreshMs: 10000,
+    generatedAt: Date.now() - 2000,
+    idleMinutes: 10,
+    counts: { sessions: 1, runningTurns: 1, runningJobs: 1, waitingApproval: 0, retrying: 0 },
+    sessions: [
+      {
+        sessionId: 'session-abc',
+        title: '安装工作台插件',
+        cwd: 'E:\\项目',
+        status: 'tool',
+        turn: 7,
+        step: 4,
+        startedAt: Date.now() - 60000,
+        elapsedMs: 60000,
+        model: { provider: 'deepseek-official', model: 'deepseek-flash' },
+        action: { kind: 'tool', tool: 'pwsh', toolLabel: '运行命令', target: null, reason: null, retry: null },
+        todos: { total: 5, completed: 2, inProgress: '写设计说明' },
+        lastEventAt: Date.now() - 2000,
+        dataAgeMs: 2000,
+      },
+    ],
+    jobs: [{ jobId: 'job-1', sessionId: 'session-abc', kind: 'pwsh', title: '安装工作台插件', startedAt: Date.now() - 30000, elapsedMs: 30000, label: null }],
+    warnings: [],
+  }
+  const fetchStub = async (url) => {
+    if (url.endsWith('/api/active')) return { ok: true, status: 200, json: async () => activeStub }
+    return { ok: true, status: 200, json: async () => payload }
+  }
+  const { component, registrations, react, ctx } = loadClient({ fetch: fetchStub })
+  component.apply(ctx)
+  const page = registrations.find((entry) => entry.spec.name === 'main')
+  const doc = new ShimDocument()
+  const container = doc.createElement('div')
+  container.clientWidth = 900
+  react.reset()
+  resetCursor(react)
+  const props = page.component()
+  assert.ok(props !== null)
+  const refHolder = react.hooks.refs.find((ref) => ref !== undefined)
+  refHolder.current = container
+  react.flushEffects()
+  await new Promise((resolve) => setTimeout(resolve, 30))
+
+  const section = container.querySelector('[data-wb-active]')
+  assert.ok(section !== null, 'live section rendered')
+  const textOf = (node) => node.querySelectorAll('span').map((span) => span.textContent).join(' ')
+  const state = section.querySelector('.wb-active-state')
+  const title = section.querySelector('.wb-active-title')
+  const todos = section.querySelector('.wb-active-todos')
+  const jobs = section.querySelector('.wb-active-jobs')
+  const jobsHead = section.querySelector('.wb-active-jobs-head')
+  assert.ok(state !== null && state.textContent.includes('正在执行'), `state wording present, got: ${state?.textContent ?? '(none)'}`)
+  assert.ok(state.textContent.includes('运行命令'))
+  assert.ok(title !== null && textOf(title).includes('安装工作台插件'))
+  assert.ok(todos !== null && textOf(todos).includes('待办 2/5'))
+  assert.ok(textOf(todos).includes('写设计说明'))
+  assert.ok(jobsHead !== null && jobsHead.textContent.includes('后台任务 1 个'))
+  assert.ok(jobs !== null && jobs.querySelectorAll('.wb-active-job').length === 1)
 })
 
 test('the page falls back to the embedded snapshot when the route fails', async () => {
   const html = readFileSync(join(here, '..', 'out', 'dsh-workbench.html'), 'utf8')
   const fetchStub = async (url) => {
     if (url.endsWith('/api/summary')) return { ok: false, status: 500, json: async () => ({}) }
+    if (url.endsWith('/api/active')) return { ok: false, status: 500, json: async () => ({}) }
     return { ok: true, status: 200, text: async () => html }
   }
   const { component, registrations, react, ctx } = loadClient({ fetch: fetchStub })

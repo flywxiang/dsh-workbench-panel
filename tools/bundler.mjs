@@ -128,7 +128,7 @@ window.__ModuleLoader__.load({
 
     var WB_ENGINE = (function () {
 ${body.replace(/^/gm, '      ')}
-      return { renderWorkbench: renderWorkbench, WORKBENCH_CSS: WORKBENCH_CSS }
+      return { renderWorkbench: renderWorkbench, renderActiveSection: renderActiveSection, WORKBENCH_CSS: WORKBENCH_CSS }
     })()
 
 ${panel.replace(/^/gm, '    ')}

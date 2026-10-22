@@ -218,6 +218,25 @@ export function renderWorkbench(host, payload, options = {}) {
     refreshButton.hidden = true
   }
 
+  const liveActive = options.liveActive === true
+  const activeMeta = el(doc, 'span', {
+    className: 'wb-active-meta',
+    text: liveActive ? '正在读取实时状态…' : '快照页面，不展示实时状态',
+  })
+  const activeBody = el(doc, 'div', { className: 'wb-active-body' })
+  if (!liveActive) {
+    activeBody.append(
+      el(doc, 'p', { className: 'wb-empty', text: '「正在处理」只在 DSH 面板里实时显示；独立仪表盘是离线快照。' }),
+    )
+  }
+  const activeSection = el(doc, 'section', { className: 'wb-section wb-active', 'data-wb-active': '1' }, [
+    el(doc, 'div', { className: 'wb-section-head' }, [
+      el(doc, 'h2', { className: 'wb-h2', text: '正在处理' }),
+      activeMeta,
+    ]),
+    activeBody,
+  ])
+
   host.replaceChildren(
     el(doc, 'header', { className: 'wb-header' }, [
       el(doc, 'div', { className: 'wb-title-wrap' }, [
@@ -229,6 +248,7 @@ export function renderWorkbench(host, payload, options = {}) {
       ]),
       el(doc, 'div', { className: 'wb-header-actions' }, [refreshButton]),
     ]),
+    activeSection,
     status,
     kpis,
     el(doc, 'section', { className: 'wb-section' }, [
@@ -674,6 +694,184 @@ export function renderWorkbench(host, payload, options = {}) {
 }
 
 /**
+ * Human wording for each live status.
+ */
+const ACTIVE_STATUS_TEXT = {
+  approval: '等待你批准',
+  retry: '等待重试',
+  tool: '正在执行',
+  model: '等待模型返回',
+  idle: '空闲',
+}
+
+/**
+ * Format an elapsed duration for the live rows.
+ * @param {number} ms - elapsed milliseconds.
+ * @returns {string} display text such as "1 分 12 秒".
+ */
+function formatDuration(ms) {
+  if (!Number.isFinite(ms) || ms < 0) return '—'
+  const seconds = Math.round(ms / 1000)
+  if (seconds < 60) return `${seconds} 秒`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return seconds % 60 === 0 ? `${minutes} 分钟` : `${minutes} 分 ${seconds % 60} 秒`
+  return `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分`
+}
+
+/**
+ * Format how long ago an instant was.
+ * @param {number} ms - age in milliseconds.
+ * @returns {string} display text such as "3 分钟前".
+ */
+function formatAge(ms) {
+  if (!Number.isFinite(ms) || ms < 1000) return '刚刚'
+  const seconds = Math.round(ms / 1000)
+  if (seconds < 60) return `${seconds} 秒前`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes} 分钟前`
+  return `${Math.floor(minutes / 60)} 小时前`
+}
+
+/**
+ * Build one live-session row.
+ * @param {Document} doc - owner document.
+ * @param {object} session - session entry from `/api/active`.
+ * @returns {HTMLElement} row element.
+ */
+function activeRow(doc, session) {
+  const status = typeof session?.status === 'string' ? session.status : 'idle'
+  const action = session?.action ?? {}
+  const title = typeof session?.title === 'string' && session.title !== '' ? session.title : String(session?.sessionId ?? '')
+  const where = typeof session?.cwd === 'string' && session.cwd !== '' ? session.cwd : null
+  const dotClass =
+    status === 'idle' ? 'wb-active-dot-idle' : status === 'approval' || status === 'retry' ? 'wb-active-dot-waiting' : 'wb-active-dot-running'
+
+  const stateParts = []
+  if (status === 'tool') stateParts.push(`${ACTIVE_STATUS_TEXT.tool} ${action.toolLabel ?? '工具'}`)
+  else if (status === 'approval') stateParts.push(`${ACTIVE_STATUS_TEXT.approval}：${action.toolLabel ?? '工具'}`)
+  else if (status === 'retry') {
+    const retry = action.retry ?? {}
+    const attempt = Number.isFinite(retry.attempt) ? retry.attempt : '?'
+    const max = Number.isFinite(retry.maxRetries) ? retry.maxRetries : '?'
+    stateParts.push(`${ACTIVE_STATUS_TEXT.retry}：第 ${attempt}/${max} 次${typeof retry.failureCode === 'string' ? ` · ${retry.failureCode}` : ''}`)
+  } else if (status === 'model') stateParts.push(ACTIVE_STATUS_TEXT.model)
+  else stateParts.push(ACTIVE_STATUS_TEXT.idle)
+  if (typeof action.target === 'string' && action.target !== '') stateParts.push(`· ${action.target}`)
+  if (typeof action.reason === 'string' && action.reason !== '') stateParts.push(`（${action.reason}）`)
+
+  const metaParts = []
+  if (Number.isFinite(session?.elapsedMs)) metaParts.push(`已运行 ${formatDuration(session.elapsedMs)}`)
+  if (status === 'idle' && Number.isFinite(session?.dataAgeMs)) metaParts.push(`上次活动 ${formatAge(session.dataAgeMs)}`)
+  if (Number.isFinite(session?.turn) && Number.isFinite(session?.step)) metaParts.push(`第 ${session.turn} 回合第 ${session.step} 步`)
+  else if (Number.isFinite(session?.turn)) metaParts.push(`第 ${session.turn} 回合`)
+  if (session?.model !== null && typeof session?.model === 'object' && typeof session.model.model === 'string') metaParts.push(session.model.model)
+
+  const todos = session?.todos
+  const todoLine =
+    todos !== null && typeof todos === 'object' && Number.isFinite(todos.total) && todos.total > 0
+      ? el(doc, 'div', { className: 'wb-active-todos' }, [
+          el(doc, 'span', { text: `待办 ${todos.completed ?? 0}/${todos.total}` }),
+          typeof todos.inProgress === 'string' && todos.inProgress !== ''
+            ? el(doc, 'span', { className: 'wb-active-todos-active', text: ` · 进行中：${todos.inProgress}` })
+            : null,
+        ].filter((node) => node !== null))
+      : null
+
+  const children = [
+    el(doc, 'span', { className: `wb-active-dot ${dotClass}` }),
+    el(doc, 'div', { className: 'wb-active-main' }, [
+      el(doc, 'div', { className: 'wb-active-title' }, [
+        el(doc, 'span', { text: title }),
+        where === null ? null : el(doc, 'span', { className: 'wb-active-where', text: where }),
+      ].filter((node) => node !== null)),
+      el(doc, 'div', { className: 'wb-active-state', text: stateParts.join(' ') }),
+      metaParts.length === 0 ? null : el(doc, 'div', { className: 'wb-active-meta-line', text: metaParts.join(' · ') }),
+      todoLine,
+    ].filter((node) => node !== null)),
+  ]
+  return el(doc, 'div', { className: `wb-active-row${status === 'idle' ? ' wb-active-row-idle' : ''}` }, children)
+}
+
+/**
+ * Build the background-job block.
+ * @param {Document} doc - owner document.
+ * @param {object[]} jobs - running jobs from `/api/active`.
+ * @returns {HTMLElement} block element.
+ */
+function activeJobs(doc, jobs) {
+  const rows = jobs.slice(0, 6).map((job) =>
+    el(doc, 'div', { className: 'wb-active-job' }, [
+      el(doc, 'span', { className: 'wb-active-job-kind', text: String(job?.kind ?? 'job') }),
+      typeof job?.title === 'string' ? el(doc, 'span', { className: 'wb-active-where', text: job.title }) : null,
+      el(doc, 'span', { text: `已运行 ${formatDuration(Number(job?.elapsedMs ?? 0))}` }),
+      typeof job?.label === 'string' && job.label !== '' ? el(doc, 'span', { className: 'wb-active-where', text: job.label }) : null,
+    ].filter((node) => node !== null)),
+  )
+  return el(doc, 'div', { className: 'wb-active-jobs' }, [
+    el(doc, 'div', { className: 'wb-active-jobs-head', text: `后台任务 ${jobs.length} 个` }),
+    ...rows,
+  ])
+}
+
+/**
+ * Paint the live "正在处理" section from one `/api/active` response.
+ *
+ * The section element is created by `renderWorkbench`; this function only
+ * replaces its body, so a 10-second poll updates the live block without
+ * re-rendering the charts or stealing scroll position.
+ *
+ * @param {HTMLElement | null} section - section created by `renderWorkbench`.
+ * @param {object | null} data - active payload, or null when the fetch failed.
+ * @param {{ now?: number }} [options] - optional reference instant.
+ * @returns {void}
+ */
+export function renderActiveSection(section, data, options = {}) {
+  if (section === null || section === undefined) return
+  const doc = section.ownerDocument
+  const meta = section.querySelector('.wb-active-meta')
+  const body = section.querySelector('.wb-active-body')
+  if (meta === null || body === null) return
+  const now = Number.isFinite(options.now) ? options.now : Date.now()
+
+  if (data === null || typeof data !== 'object' || Array.isArray(data)) {
+    meta.textContent = '实时状态暂不可用'
+    body.replaceChildren(el(doc, 'p', { className: 'wb-empty', text: '暂时读不到实时状态，十几秒后会自动重试。' }))
+    return
+  }
+  if (data.enabled === false) {
+    meta.textContent = '实时状态已关闭'
+    body.replaceChildren(el(doc, 'p', { className: 'wb-empty', text: '在插件配置里把 activeEnabled 设为 true 后可见。' }))
+    return
+  }
+
+  const sessions = Array.isArray(data.sessions) ? data.sessions : []
+  const jobs = Array.isArray(data.jobs) ? data.jobs : []
+  const warnings = Array.isArray(data.warnings) ? data.warnings : []
+  const counts = data.counts ?? {}
+  const chips = []
+  if (Number.isFinite(counts.runningTurns) && counts.runningTurns > 0) chips.push(`运行中 ${counts.runningTurns}`)
+  if (Number.isFinite(counts.waitingApproval) && counts.waitingApproval > 0) chips.push(`等待你 ${counts.waitingApproval}`)
+  if (Number.isFinite(counts.runningJobs) && counts.runningJobs > 0) chips.push(`后台任务 ${counts.runningJobs}`)
+  const generatedAt = Number.isFinite(data.generatedAt) ? data.generatedAt : now
+  const stamp = `更新于 ${formatAge(Math.max(0, now - generatedAt))}`
+  meta.textContent = chips.length === 0 ? stamp : `${chips.join(' · ')} · ${stamp}`
+
+  if (sessions.length === 0 && jobs.length === 0) {
+    const empty = [el(doc, 'p', { className: 'wb-empty', text: '当前没有正在处理的任务。' })]
+    if (warnings.length > 0) {
+      empty.push(el(doc, 'p', { className: 'wb-active-warn', text: `${warnings.length} 个会话状态读取失败，稍后重试。` }))
+    }
+    body.replaceChildren(...empty)
+    return
+  }
+
+  const rows = sessions.map((session) => activeRow(doc, session))
+  if (jobs.length > 0) rows.push(activeJobs(doc, jobs))
+  if (warnings.length > 0) rows.push(el(doc, 'p', { className: 'wb-active-warn', text: `${warnings.length} 个会话状态读取失败` }))
+  body.replaceChildren(...rows)
+}
+
+/**
  * Sum a bucket's stacked values across the metric's keys.
  * @param {object} bucket - trend bucket.
  * @param {{key: string}[]} keys - metric keys.
@@ -827,6 +1025,28 @@ export const WORKBENCH_CSS = `
 
 .wb-coverage { display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--wb-dim); font-size: 11px; border-top: 1px solid var(--wb-border); padding-top: 10px; }
 .wb-empty { color: var(--wb-dim); font-size: 12px; }
+.wb-active-meta { color: var(--wb-dim); font-size: 12px; }
+.wb-active-body { display: flex; flex-direction: column; gap: 8px; }
+.wb-active-row { display: flex; align-items: flex-start; gap: 10px; padding: 8px 10px; border: 1px solid var(--wb-border); border-radius: 10px; background: var(--wb-card); }
+.wb-active-row-idle { opacity: 0.72; }
+.wb-active-dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; margin-top: 6px; background: var(--wb-dim); }
+.wb-active-dot-running { background: #2ea043; animation: wb-pulse 2s ease-in-out infinite; }
+.wb-active-dot-waiting { background: #f0a13a; animation: wb-pulse 1.6s ease-in-out infinite; }
+.wb-active-dot-idle { background: var(--wb-border); }
+@keyframes wb-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) { .wb-active-dot-running, .wb-active-dot-waiting { animation: none; } }
+.wb-active-main { flex: 1 1 auto; min-width: 0; }
+.wb-active-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; font-size: 13px; font-weight: 600; }
+.wb-active-where { color: var(--wb-dim); font-size: 11px; font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.wb-active-state { font-size: 12px; margin-top: 2px; }
+.wb-active-meta-line { color: var(--wb-dim); font-size: 11px; margin-top: 2px; display: flex; flex-wrap: wrap; gap: 4px 10px; }
+.wb-active-todos { color: var(--wb-dim); font-size: 11px; margin-top: 3px; }
+.wb-active-todos-active { color: var(--wb-fg); }
+.wb-active-jobs { border-top: 1px dashed var(--wb-border); padding-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+.wb-active-jobs-head { color: var(--wb-dim); font-size: 11px; }
+.wb-active-job { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 12px; color: var(--wb-dim); }
+.wb-active-job-kind { color: var(--wb-fg); }
+.wb-active-warn { color: #f0a13a; font-size: 11px; margin: 0; }
 .wb-compact { padding: 12px; gap: 12px; }
 .wb-compact .wb-kpis { grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
 .wb-compact .wb-title { font-size: 17px; }

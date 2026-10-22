@@ -80,7 +80,7 @@ const embeddedJson = JSON.stringify(payload).replace(/</g, '\\u003c')
 // modules from src/ (the client bundle embeds them separately). The plugin host
 // imports `collection.mjs`, a thin alias of the collector.
 mkdirSync(join(pluginDir, 'lib', 'shared'), { recursive: true })
-for (const file of ['zstd-frames.mjs', 'session-calls.mjs', 'workbench-data.mjs', 'collect.mjs']) {
+for (const file of ['zstd-frames.mjs', 'session-calls.mjs', 'workbench-data.mjs', 'collect.mjs', 'active-state.mjs']) {
   writeFileSync(join(pluginDir, 'lib', 'shared', file), readFileSync(join(projectRoot, 'src', file), 'utf8'))
 }
 writeFileSync(
@@ -120,7 +120,7 @@ ${css[1]}
   }
   var ENGINE = (function () {
 ${engine.body.replace(/^/gm, '    ')}
-    return { renderWorkbench: renderWorkbench };
+    return { renderWorkbench: renderWorkbench, renderActiveSection: renderActiveSection };
   })();
   ENGINE.renderWorkbench(app, payload, {});
   var stamp = document.getElementById('wb-stamp');

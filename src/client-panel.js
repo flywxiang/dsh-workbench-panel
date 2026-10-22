@@ -22,6 +22,15 @@ async function loadPayload() {
   return await response.json()
 }
 
+/** Fetch the live "正在处理" payload. */
+async function loadActive() {
+  const response = await fetch(WORKBENCH_BASE_PATH + '/api/active', {
+    headers: { accept: 'application/json' },
+  })
+  if (!response.ok) throw new Error('HTTP ' + response.status)
+  return await response.json()
+}
+
 /** Parse the payload embedded in the pre-generated dashboard snapshot. */
 function parseEmbedded(html) {
   const match = /<script type="application\/json" id="wb-payload">([\s\S]*?)<\/script>/.exec(html)
@@ -53,6 +62,8 @@ function WorkbenchPanel() {
     if (host === null) return undefined
     let disposer = null
     let poll = null
+    let activePoll = null
+    let activeIntervalMs = 10000
     let disposed = false
 
     const mount = (payload) => {
@@ -61,7 +72,32 @@ function WorkbenchPanel() {
       disposer = WB_ENGINE.renderWorkbench(host, payload, {
         refresh: loadPayload,
         compact: true,
+        liveActive: true,
       })
+      paintActive()
+    }
+
+    const paintActive = () => {
+      const section = host.querySelector('[data-wb-active]')
+      if (section === null) return
+      loadActive()
+        .then((data) => {
+          if (disposed) return
+          WB_ENGINE.renderActiveSection(section, data)
+          const next = Number.isFinite(data?.refreshMs) ? Math.min(60000, Math.max(1000, data.refreshMs)) : activeIntervalMs
+          if (next !== activeIntervalMs) {
+            activeIntervalMs = next
+            scheduleActive()
+          }
+        })
+        .catch(() => {
+          if (!disposed) WB_ENGINE.renderActiveSection(section, null)
+        })
+    }
+
+    const scheduleActive = () => {
+      if (activePoll !== null) clearInterval(activePoll)
+      activePoll = setInterval(paintActive, activeIntervalMs)
     }
 
     const tick = () => {
@@ -97,9 +133,11 @@ function WorkbenchPanel() {
 
     tick()
     poll = setInterval(tick, 30000)
+    scheduleActive()
     return () => {
       disposed = true
       if (poll !== null) clearInterval(poll)
+      if (activePoll !== null) clearInterval(activePoll)
       if (disposer !== null) disposer()
     }
   }, [])

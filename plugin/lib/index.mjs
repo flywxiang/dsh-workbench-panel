@@ -5,6 +5,7 @@
  * aggregate in memory:
  *
  *   GET /dsh-workbench/api/summary   aggregated payload (what the panel fetches)
+ *   GET /dsh-workbench/api/active    what is being processed right now
  *   GET /dsh-workbench/api/health    collection accounting, for troubleshooting
  *   GET /dsh-workbench/dashboard.html  the generated standalone page
  *
@@ -13,6 +14,10 @@
  * another plugin changing the query API. A background refresh keeps the payload
  * current; a request only pays for a collect when the cached payload is stale.
  *
+ * The active route reuses the same artifacts but tails them incrementally (see
+ * `shared/active-state.mjs`), so a panel polling every few seconds costs
+ * milliseconds rather than re-decoding every log.
+ *
  * The web server exists only under browser-facing profiles, so the routes ride a
  * scoped `ctx.inject(['webServer'])`: the closure runs where the service appears
  * and never runs where it does not.
@@ -20,6 +25,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { collectWorkbench, resolveDshHome } from './shared/collect.mjs'
+import { createActiveTracker } from './shared/active-state.mjs'
 
 /** Route prefix owned by this plugin. */
 export const BASE_PATH = '/dsh-workbench'
@@ -29,6 +35,31 @@ const REFRESH_MS = 5 * 60 * 1000
 
 /** A payload older than this triggers a collect on request. */
 const STALE_MS = 60 * 1000
+
+/** Live state is only this stale before a poll recomputes it. */
+const ACTIVE_CACHE_MS = 1500
+
+/** Default client polling interval for the live section. */
+const DEFAULT_ACTIVE_REFRESH_MS = 10 * 1000
+
+/** Empty live-state counts, used before the first successful collect. */
+function emptyActiveCounts() {
+  return { sessions: 0, runningTurns: 0, runningJobs: 0, waitingApproval: 0, retrying: 0 }
+}
+
+/**
+ * Clamp an integer configuration value.
+ * @param {unknown} value - raw value.
+ * @param {number} fallback - default when unset or invalid.
+ * @param {number} min - lower bound.
+ * @param {number} max - upper bound.
+ * @returns {number} clamped integer.
+ */
+function clampInt(value, fallback, min, max) {
+  const number = Number.parseInt(String(value ?? ''), 10)
+  if (!Number.isFinite(number)) return fallback
+  return Math.min(max, Math.max(min, number))
+}
 
 /**
  * Build the requested time window in days from a validated query value.
@@ -58,6 +89,63 @@ export function registerRoutes(ctx, config) {
   /** Last collection accounting, for the health route. */
   let lastStats = null
   let lastError = null
+
+  // Live "正在处理" configuration. Every knob has a safe default so an older
+  // profile patch keeps working unchanged.
+  const activeEnabled = config.activeEnabled !== false
+  const activeRefreshMs = clampInt(config.activeRefreshMs, DEFAULT_ACTIVE_REFRESH_MS, 1000, 60000)
+  const activeIdleMinutes = clampInt(config.activeIdleMinutes, 10, 1, 120)
+  const activeMaxSessions = clampInt(config.activeMaxSessions, 10, 1, 50)
+  const showToolTarget = config.showToolTarget === true
+  /** Trackers keyed by requested idle window, so a query override gets its own. */
+  const trackers = new Map()
+  /** Cached live payloads keyed by idle window. */
+  const activeCache = new Map()
+  /** In-flight live collects keyed by idle window. */
+  const activeInflight = new Map()
+  let activeError = null
+
+  /**
+   * Tracker for one idle window.
+   * @param {number} idleMinutes - trailing activity window.
+   * @returns {object} tracker instance.
+   */
+  const trackerFor = (idleMinutes) => {
+    let tracker = trackers.get(idleMinutes)
+    if (tracker === undefined) {
+      tracker = createActiveTracker({ dshHome, idleMinutes, maxSessions: activeMaxSessions, showTarget: showToolTarget })
+      trackers.set(idleMinutes, tracker)
+    }
+    return tracker
+  }
+
+  /**
+   * Collect (or reuse) the live payload.
+   * @param {number} idleMinutes - trailing activity window.
+   * @returns {Promise<object>} active payload.
+   */
+  const ensureActive = async (idleMinutes) => {
+    const entry = activeCache.get(idleMinutes)
+    if (entry !== undefined && Date.now() - entry.at < ACTIVE_CACHE_MS) return entry.value
+    const running = activeInflight.get(idleMinutes)
+    if (running !== undefined) return running
+    const promise = Promise.resolve()
+      .then(() => {
+        const payload = trackerFor(idleMinutes).collect()
+        activeCache.set(idleMinutes, { at: Date.now(), value: payload })
+        activeError = null
+        return payload
+      })
+      .catch((error) => {
+        activeError = String(error?.message ?? error)
+        throw error
+      })
+      .finally(() => {
+        activeInflight.delete(idleMinutes)
+      })
+    activeInflight.set(idleMinutes, promise)
+    return promise
+  }
 
   /**
    * Collect (or reuse) the aggregate payload.
@@ -122,10 +210,55 @@ export function registerRoutes(ctx, config) {
   })
 
   ctx.webServer.register({
+    name: 'dsh-workbench-active',
+    kind: 'exact',
+    path: `${BASE_PATH}/api/active`,
+    handler: async (req, res) => {
+      if (req.method !== 'GET' && req.method !== 'HEAD') {
+        json(res, 405, { error: 'method not allowed' })
+        return
+      }
+      const url = new URL(req.url ?? BASE_PATH, 'http://localhost')
+      const idleMinutes = clampInt(url.searchParams.get('idleMinutes'), activeIdleMinutes, 1, 120)
+      if (!activeEnabled) {
+        json(res, 200, {
+          enabled: false,
+          refreshMs: activeRefreshMs,
+          generatedAt: Date.now(),
+          idleMinutes,
+          counts: emptyActiveCounts(),
+          sessions: [],
+          jobs: [],
+          warnings: [],
+        })
+        return
+      }
+      try {
+        const payload = await ensureActive(idleMinutes)
+        json(res, 200, { enabled: true, refreshMs: activeRefreshMs, ...payload })
+      } catch (error) {
+        // A live-status failure must never surface as a panel error toast; it
+        // degrades to an empty section with the reason attached.
+        json(res, 200, {
+          enabled: true,
+          refreshMs: activeRefreshMs,
+          generatedAt: Date.now(),
+          idleMinutes,
+          counts: emptyActiveCounts(),
+          sessions: [],
+          jobs: [],
+          warnings: [{ sessionId: null, message: String(error?.message ?? error) }],
+        })
+      }
+    },
+  })
+
+  ctx.webServer.register({
     name: 'dsh-workbench-health',
     kind: 'exact',
     path: `${BASE_PATH}/api/health`,
     handler: (req, res) => {
+      const trackerStats = [...trackers.values()].map((tracker) => tracker.stats())
       json(res, 200, {
         ok: lastError === null,
         dshHome,
@@ -134,6 +267,15 @@ export function registerRoutes(ctx, config) {
         cached: cached === null ? null : { ageMs: Date.now() - cached.at, days: cached.days },
         lastStats,
         lastError,
+        active: {
+          enabled: activeEnabled,
+          refreshMs: activeRefreshMs,
+          idleMinutes: activeIdleMinutes,
+          maxSessions: activeMaxSessions,
+          showToolTarget,
+          trackers: trackerStats,
+          lastError: activeError,
+        },
       })
     },
   })

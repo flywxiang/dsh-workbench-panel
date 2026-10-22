@@ -14,8 +14,8 @@
 
 ```bash
 # 1. 拿到包（二选一）
-#    a) 本地 tarball：把 dsh-workbench-panel-1.3.1.tgz 发给对方
-npx -y @deepseek-ai/dsh plugin --profile web add ./dsh-workbench-panel-1.3.1.tgz
+#    a) 本地 tarball：把 dsh-workbench-panel-1.3.2.tgz 发给对方
+npx -y @deepseek-ai/dsh plugin --profile web add ./dsh-workbench-panel-1.3.2.tgz
 
 #    b) 已发布到 npm：直接用包名
 npx -y @deepseek-ai/dsh plugin --profile web add @dsh-workbench/panel
@@ -29,7 +29,7 @@ launchctl kickstart -k gui/$(id -u)/ai.openclaw.dsh-rc8   # macOS launchd 启动
 
 打开后侧边栏会出现「工作台」入口（英文界面显示 Workbench），点开就是面板。
 
-> tarball 的文件名不含 scope：`@dsh-workbench/panel@1.3.1` 打包出来是 `dsh-workbench-panel-1.3.1.tgz`，这是 npm 的规则，不是漏字。
+> tarball 的文件名不含 scope：`@dsh-workbench/panel@1.3.2` 打包出来是 `dsh-workbench-panel-1.3.2.tgz`，这是 npm 的规则，不是漏字。
 
 ### 如果 `dsh plugin add` 报 pnpm 错误
 
@@ -40,7 +40,7 @@ launchctl kickstart -k gui/$(id -u)/ai.openclaw.dsh-rc8   # macOS launchd 启动
 ```bash
 # a) 先在 profile 目录里对齐一次，再重试
 cd ~/.dsh/profiles/web && pnpm install --config.public-hoist-pattern='*'
-npx -y @deepseek-ai/dsh plugin --profile web add ./dsh-workbench-panel-1.3.1.tgz
+npx -y @deepseek-ai/dsh plugin --profile web add ./dsh-workbench-panel-1.3.2.tgz
 
 # b) 手工接线（不跑 pnpm）
 #    注意 scope 目录要一起建，软链名是 @dsh-workbench/panel

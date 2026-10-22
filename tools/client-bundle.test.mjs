@@ -400,16 +400,17 @@ test('insight sections live on the second tab and show a badge for alerts', asyn
 
   assert.ok(headings().includes('调用热力图'), 'the charts tab is shown first')
   assert.ok(headings().includes('每日趋势'))
-  assert.ok(!headings().includes('近 7 天概览'), 'insight sections stay on the second tab')
+  assert.ok(headings().includes('近 7 天概览'), 'the cost cards live on the first tab')
+  assert.ok(!headings().includes('一键周报'), 'the weekly report stays on the second tab')
   const insightsPanel = container.querySelector('[data-wb-tab="insights"]')
   assert.equal(insightsPanel.hidden, true, 'the insights panel starts hidden')
 
   clickTab('花费与产出')
   const secondTab = headings()
-  assert.equal(secondTab[0], '近 7 天概览', 'the 7-day overview comes first on the insights tab')
+  assert.equal(secondTab[0], '一键周报', 'the weekly report comes first on the insights tab')
   assert.ok(secondTab.includes('等你确认'), 'waiting section is shown')
   assert.ok(secondTab.includes('上下文提醒'), 'context section is shown')
-  assert.ok(secondTab.includes('近 7 天概览'), 'overview section is shown')
+  assert.ok(!secondTab.includes('近 7 天概览'), 'the cost cards are not repeated on the second tab')
   assert.ok(secondTab.includes('未完成待办'), 'todo section is shown')
   assert.ok(secondTab.includes('最近交付'), 'deliverables section is shown')
   assert.ok(!secondTab.includes('延迟趋势'), 'the latency chart is hidden by default')
@@ -439,11 +440,14 @@ test('switching tabs toggles the panels', async () => {
   payload.insights = sampleInsights()
   const { headings, clickTab } = await renderPanel(payload)
   assert.ok(headings().includes('调用热力图'), 'overview first')
+  assert.ok(headings().includes('近 7 天概览'), 'cost cards are on the overview tab')
   clickTab('花费与产出')
-  assert.ok(headings().includes('近 7 天概览'), 'second tab shows insights')
+  assert.ok(headings().includes('一键周报'), 'second tab shows the weekly report')
+  assert.ok(!headings().includes('近 7 天概览'), 'cost cards are not on the second tab')
   clickTab('概览')
   assert.ok(headings().includes('调用热力图'), 'switching back restores the charts tab')
-  assert.ok(!headings().includes('近 7 天概览'))
+  assert.ok(headings().includes('近 7 天概览'))
+  assert.ok(!headings().includes('一键周报'))
 })
 
 test('empty insight lists hide their sections; missing insights keep the latency chart', async () => {
@@ -456,8 +460,9 @@ test('empty insight lists hide their sections; missing insights keep the latency
   insights.counts = { waiting: 0, todos: 0, deliverables: 0, context: 0 }
   payload.insights = insights
   const empty = await renderPanel(payload)
+  assert.ok(empty.headings().includes('近 7 天概览'), 'the cost cards still render with zero counts on the overview tab')
   empty.clickTab('花费与产出')
-  assert.ok(empty.headings().includes('近 7 天概览'), 'the overview still renders with zero counts')
+  assert.ok(empty.headings().includes('一键周报'), 'the weekly report still renders')
   assert.ok(!empty.headings().includes('等你确认'), 'empty waiting section is hidden')
   assert.ok(!empty.headings().includes('未完成待办'), 'empty todo section is hidden')
   assert.ok(!empty.headings().includes('最近交付'), 'empty deliverables section is hidden')

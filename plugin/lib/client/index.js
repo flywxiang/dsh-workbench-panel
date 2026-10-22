@@ -856,15 +856,19 @@ window.__ModuleLoader__.load({
         ])
       
         // --- insights sections: built from payload.insights, hidden when absent ---
+        // The cost cards live on the first tab next to the other summary numbers; the
+        // copy-ready weekly report and the alert lists stay on the insights tab.
+        const costPart = insightSection(doc, '近 7 天概览')
+        const reportPart = insightSection(doc, '一键周报')
         const waitingPart = insightSection(doc, '等你确认')
         const contextPart = insightSection(doc, '上下文提醒')
-        const overviewPart = insightSection(doc, '近 7 天概览')
         const todosPart = insightSection(doc, '未完成待办')
         const deliverablesPart = insightSection(doc, '最近交付')
         const insightParts = {
+          cost: costPart,
+          report: reportPart,
           waiting: waitingPart,
           context: contextPart,
-          overview: overviewPart,
           todos: todosPart,
           deliverables: deliverablesPart,
         }
@@ -902,13 +906,14 @@ window.__ModuleLoader__.load({
           activeSection,
           status,
           kpis,
+          costPart.section,
           heatSection,
           trendSection,
           ...(showLatency ? [latencySection] : []),
           coverage,
         ])
         const insightsPanel = el(doc, 'div', { className: 'wb-tab-panel', 'data-wb-tab': 'insights' }, [
-          overviewPart.section,
+          reportPart.section,
           waitingPart.section,
           contextPart.section,
           todosPart.section,
@@ -1032,17 +1037,18 @@ window.__ModuleLoader__.load({
               meta: [item.title, formatShortInstant(item.at, timeZone)],
             }),
           )
-          paintOverview()
+          paintCost()
+          paintReport()
           const alerts = (insights.counts?.waiting ?? 0) + (insights.counts?.context ?? 0)
           tabBadge.hidden = alerts === 0
           tabBadge.textContent = alerts === 0 ? '' : String(alerts)
         }
       
-        /** Paint the cost + weekly-report overview. */
-        function paintOverview() {
+        /** Paint the cost cards, which live on the first tab. */
+        function paintCost() {
           const insights = current.insights
           const cost = insights?.cost
-          const part = insightParts.overview
+          const part = insightParts.cost
           if (cost === null || cost === undefined || typeof cost !== 'object') {
             part.section.hidden = true
             return
@@ -1058,19 +1064,32 @@ window.__ModuleLoader__.load({
             insightKpi(doc, '估算花费', formatMoneyShort(cost.total ?? 0), cost.unpricedCalls > 0 ? `另 ${cost.unpricedCalls} 次未定价` : '全部已定价'),
             insightKpi(doc, '缓存已省', formatMoneyShort(cost.saved ?? 0), `缓存读取 ${formatTokensShort(tokens.cacheRead ?? 0)}`),
           ])
-          const reportText = typeof insights.reportText === 'string' ? insights.reportText : ''
-          const report = el(doc, 'pre', { className: 'wb-report', text: reportText })
-          const copyButton = el(doc, 'button', { className: 'wb-btn wb-btn-ghost', type: 'button', text: '复制周报' })
-          copyButton.addEventListener('click', () => copyReport(doc, report, reportText, copyButton))
-          const head = el(doc, 'div', { className: 'wb-report-head' }, [
-            el(doc, 'span', { className: 'wb-report-title', text: '一键周报（复制给领导/同事）' }),
-            copyButton,
-          ])
           const note = el(doc, 'p', {
             className: 'wb-empty',
             text: `花费用内置价目表估算（${insights.priceNote ?? '可在插件配置 prices 里修改'}），不代表账单金额。`,
           })
-          part.body.replaceChildren(kpis, head, report, note)
+          part.body.replaceChildren(kpis, note)
+        }
+      
+        /** Paint the copy-ready weekly report, which stays on the insights tab. */
+        function paintReport() {
+          const insights = current.insights
+          const reportText = typeof insights?.reportText === 'string' ? insights.reportText : ''
+          const part = insightParts.report
+          if (reportText === '') {
+            part.section.hidden = true
+            return
+          }
+          part.section.hidden = false
+          part.count.textContent = '可复制'
+          const report = el(doc, 'pre', { className: 'wb-report', text: reportText })
+          const copyButton = el(doc, 'button', { className: 'wb-btn wb-btn-ghost', type: 'button', text: '复制周报' })
+          copyButton.addEventListener('click', () => copyReport(doc, report, reportText, copyButton))
+          const head = el(doc, 'div', { className: 'wb-report-head' }, [
+            el(doc, 'span', { className: 'wb-report-title', text: '复制给领导/同事' }),
+            copyButton,
+          ])
+          part.body.replaceChildren(head, report)
         }
       
         function paintStatus() {

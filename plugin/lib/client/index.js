@@ -908,9 +908,9 @@ window.__ModuleLoader__.load({
           coverage,
         ])
         const insightsPanel = el(doc, 'div', { className: 'wb-tab-panel', 'data-wb-tab': 'insights' }, [
+          overviewPart.section,
           waitingPart.section,
           contextPart.section,
-          overviewPart.section,
           todosPart.section,
           deliverablesPart.section,
         ])

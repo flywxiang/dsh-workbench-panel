@@ -406,6 +406,7 @@ test('insight sections live on the second tab and show a badge for alerts', asyn
 
   clickTab('花费与产出')
   const secondTab = headings()
+  assert.equal(secondTab[0], '近 7 天概览', 'the 7-day overview comes first on the insights tab')
   assert.ok(secondTab.includes('等你确认'), 'waiting section is shown')
   assert.ok(secondTab.includes('上下文提醒'), 'context section is shown')
   assert.ok(secondTab.includes('近 7 天概览'), 'overview section is shown')

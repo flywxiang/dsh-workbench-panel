@@ -6,7 +6,8 @@ DSH（DeepSeek Harness）的「工作台」插件：**只统计语言模型调�
 
 - **「正在处理」实时状态**（1.2.0）：此刻有哪些会话在跑、是在等模型还是在跑工具、有没有等你批准、后台任务、智能体待办做到第几项——默认 10 秒刷新一次，默认不显示命令内容。
 - **等你确认 / 上下文提醒 / 近 7 天概览 / 未完成待办 / 最近交付**（1.3.0）：卡在等你批准或回答的会话、上下文快爆的会话、按内置价目表估算的花费与缓存节省、跨会话的未完成待办、最近产出并交付的文件，以及一键复制粘贴的周报文字。
-- **两个 tab**（1.3.3）：**概览**放正在处理、汇总卡片、近 7 天花费卡片和图表；**花费与产出**放一键周报、等你确认、上下文提醒、未完成待办、最近交付。切换后保持选中（30 秒刷新数据也不会跳回），有等待或上下文提醒时 tab 上带数字角标。
+- **两个 tab**（1.3.3）：**概览**放正在处理、汇总卡片、近 7 天花费卡片和图表；**花费与产出**放一键周报、等你确认、上下文提醒、未完成待办、最近交付。切换后保持选中（30 秒刷新数据也不会跳回），有等待或上下文提醒时 tab 上带数字角标；1.4.0 起再加上第三个 **工作总结** tab。
+- **工作总结 tab**（1.4.0）：把当天/本周的对话材料交给本机模型，写成可以直接发给上级的书面日报与周报——日报每天 18:30、周报每周五 18:30 自动生成，也能点「立即生成」手动补；可切历史期数、一键复制。只取真人说的话，寒暄与系统注入内容会被过滤掉。详见 [`plugin/README.md`](plugin/README.md#工作总结140)。
 - 延迟趋势默认隐藏（`latencyEnabled: true` 可打开）。
 
 零第三方依赖——宿主半边只用 Node 内置模块，浏览器半边是预构建产物。
@@ -16,7 +17,7 @@ DSH（DeepSeek Harness）的「工作台」插件：**只统计语言模型调�
 想用的人**不需要 clone 这个仓库**，直接装 Release 里的 tgz：
 
 ```bash
-npx -y @deepseek-ai/dsh plugin --profile web add ./dsh-workbench-panel-1.3.3.tgz
+npx -y @deepseek-ai/dsh plugin --profile web add ./dsh-workbench-panel-1.4.0.tgz
 launchctl kickstart -k gui/$(id -u)/ai.openclaw.dsh-rc8
 ```
 
@@ -38,7 +39,7 @@ cache/     会话解析缓存，含真实对话数据（已 gitignore）
 
 ```bash
 node tools/build.mjs            # 采集 + 生成独立仪表盘 + 重建插件 bundle
-node --test tools/*.test.mjs    # 跑测试（42 个）
+node --test tools/*.test.mjs    # 跑测试（70 个）
 node tools/pack.mjs             # npm pack 出 dist/dsh-workbench-panel-<version>.tgz
 ```
 

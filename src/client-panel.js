@@ -31,6 +31,35 @@ async function loadActive() {
   return await response.json()
 }
 
+/**
+ * Ask the host to write one work summary right now.
+ *
+ * Resolves to the host's response body: `{entry, summaries}` when a report was
+ * written, or `{skipped:true, reason}` when there was nothing to write. A non-2xx
+ * answer becomes a rejected promise carrying the host's error text, which the
+ * panel shows in the summary notice.
+ * @param {'daily' | 'weekly'} kind - summary kind to generate.
+ * @returns {Promise<object>} parsed response body.
+ */
+async function generateSummary(kind) {
+  const response = await fetch(WORKBENCH_BASE_PATH + '/api/summaries/generate', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', accept: 'application/json' },
+    body: JSON.stringify({ kind: kind === 'weekly' ? 'weekly' : 'daily' }),
+  })
+  let body = null
+  try {
+    body = await response.json()
+  } catch {
+    body = null
+  }
+  if (!response.ok) {
+    const detail = body !== null && typeof body === 'object' && typeof body.error === 'string' ? body.error : ''
+    throw new Error(detail !== '' ? detail : 'HTTP ' + response.status)
+  }
+  return body === null || typeof body !== 'object' ? {} : body
+}
+
 /** Parse the payload embedded in the pre-generated dashboard snapshot. */
 function parseEmbedded(html) {
   const match = /<script type="application\/json" id="wb-payload">([\s\S]*?)<\/script>/.exec(html)
@@ -74,6 +103,9 @@ function WorkbenchPanel() {
       if (disposer !== null) disposer()
       disposer = WB_ENGINE.renderWorkbench(host, payload, {
         refresh: loadPayload,
+        // The summary tab's 立即生成 button posts to the host and repaints only
+        // its own region, so generating a report never rebuilds the charts.
+        generateSummary,
         compact: true,
         liveActive: true,
         state: viewStateRef.current,

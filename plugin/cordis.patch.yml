@@ -9,3 +9,20 @@
       config:
         timeZone: Asia/Shanghai
         days: 60
+        # 每日/每周工作总结：由宿主模型服务生成，写在 $DSH_HOME/workbench/summaries.json。
+        # 总开关，默认 true。
+        summaryEnabled: true
+        # 本地时间 HH:MM。过点后自动补齐“今天 + 昨天”的日报（机器关着时下次启动补跑）。
+        # 默认 '18:30'。
+        summaryDailyTime: '18:30'
+        # 本地时间 HH:MM。周五及以后保证本周（周一至周五）周报；周一到周四补上一周周报。
+        # 默认 '18:30'。
+        summaryWeeklyTime: '18:30'
+        # 可选：显式指定生成总结用的模型路由。两项都留空时使用当前会话默认模型
+        # （agentDefaultModel.currentSelection()），默认 ''。
+        summaryProvider: ''
+        summaryModel: ''
+        # 送进模型的材料字符上限，默认 60000（约 6 万字符）。
+        summaryMaxChars: 60000
+        # 模型输出 token 上限，默认 1800；周报比日报长，留足余量。
+        summaryMaxOutputTokens: 1800

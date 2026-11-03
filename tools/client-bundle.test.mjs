@@ -7,6 +7,9 @@
  * React implementation, so a wrong slot name, a missing export, or a broken
  * fetch path fails here instead of silently leaving the GUI without a panel.
  *
+ * The bundle is rebuilt in memory from `src/` (see `readBundleSource`), so the
+ * shipped concatenation — engine plus panel in one script — is what runs here.
+ *
  * Run: node --test "tools/*.test.mjs"
  */
 import { test } from 'node:test'
@@ -14,6 +17,8 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { buildClientBundle } from './bundler.mjs'
+import { WORKBENCH_CSS, renderWorkbench } from '../src/workbench-render.mjs'
 import { ShimDocument } from './dom-shim.mjs'
 
 /**
@@ -25,10 +30,36 @@ function resetCursor(react) {
 }
 
 const here = dirname(fileURLToPath(import.meta.url))
-// `WB_BUNDLE` lets the package test point at an unpacked tarball instead of the
-// working tree, so the artifact we hand out is the artifact we test.
-const bundlePath =
-  process.env.WB_BUNDLE ?? join(here, '..', 'plugin', 'lib', 'client', 'index.js')
+/** Cached bundle text; the sources do not change while one test run is going. */
+let bundleSource = null
+
+/**
+ * Return the client bundle source this file tests.
+ *
+ * By default the bundle is built in memory from `src/` with the same transform
+ * `tools/build.mjs` uses. Testing the sources keeps the checks honest: the
+ * concatenation step itself runs here, so a syntax error or a helper name
+ * declared twice in the engine fails this file instead of surfacing as a bare
+ * "import failed" in the host page — and no generated artifact has to be
+ * regenerated first. `WB_BUNDLE` still points the harness at a real artifact (an
+ * unpacked tarball, say), so the shipped file can be tested exactly as shipped.
+ * @returns {string} client bundle script text.
+ */
+function readBundleSource() {
+  if (bundleSource !== null) return bundleSource
+  const artifact = process.env.WB_BUNDLE
+  if (artifact !== undefined && artifact !== '') {
+    bundleSource = readFileSync(artifact, 'utf8')
+    return bundleSource
+  }
+  // Same substitution `tools/build.mjs` performs before bundling the panel.
+  const clientSource = readFileSync(join(here, '..', 'src', 'client-panel.js'), 'utf8').replace(
+    '__WB_CSS__',
+    'WB_ENGINE.WORKBENCH_CSS',
+  )
+  bundleSource = buildClientBundle(clientSource)
+  return bundleSource
+}
 
 /** Minimal React stand-in: records element trees and runs hooks immediately. */
 function stubReact() {
@@ -88,7 +119,7 @@ function stubReact() {
  * @returns {{registrations: object[], component: Function, react: object, expose: object}}
  */
 function loadClient(options = {}) {
-  const source = readFileSync(bundlePath, 'utf8')
+  const source = readBundleSource()
   const registrations = []
   const react = stubReact()
   const doc = options.document ?? new ShimDocument()
@@ -346,12 +377,20 @@ function sampleInsights() {
 /**
  * Mount the panel against a payload and expose the visible headings plus tab helpers.
  * @param {object} payload - summary payload (insights included or omitted).
- * @returns {Promise<{container: object, headings: () => string[], tabs: object[], clickTab: (label: string) => void, buttons: object[]}>} rendered page facts.
+ * @param {object} [options] - test hooks.
+ * @param {(init: object, url: string) => Promise<object>} [options.onGenerate] - answer for `POST /api/summaries/generate`.
+ * @returns {Promise<{container: object, headings: () => string[], tabs: object[], tabFor: (label: string) => object | undefined, clickTab: (label: string) => void, buttons: object[], calls: {url: string, init: object}[]}>} rendered page facts.
  */
-async function renderPanel(payload) {
+async function renderPanel(payload, options = {}) {
   const activeStub = { enabled: true, refreshMs: 10000, generatedAt: Date.now(), counts: {}, sessions: [], jobs: [], warnings: [] }
-  const fetchStub = async (url) => {
+  const calls = []
+  const fetchStub = async (url, init) => {
+    calls.push({ url, init })
     if (url.endsWith('/api/active')) return { ok: true, status: 200, json: async () => activeStub }
+    if (url.endsWith('/api/summaries/generate')) {
+      if (typeof options.onGenerate === 'function') return options.onGenerate(init ?? {}, url)
+      return { ok: false, status: 500, json: async () => ({ error: '测试里没准备生成结果' }) }
+    }
     return { ok: true, status: 200, json: async () => payload }
   }
   const { component, registrations, react, ctx } = loadClient({ fetch: fetchStub })
@@ -390,7 +429,7 @@ async function renderPanel(payload) {
     assert.ok(button !== undefined, `tab "${label}" exists`)
     button.dispatch('click')
   }
-  return { container, headings, tabs, tabFor, clickTab, buttons: container.querySelectorAll('.wb-btn') }
+  return { container, headings, tabs, tabFor, clickTab, buttons: container.querySelectorAll('.wb-btn'), calls }
 }
 
 test('insight sections live on the second tab and show a badge for alerts', async () => {
@@ -476,5 +515,281 @@ test('empty insight lists hide their sections; missing insights keep the latency
   assert.equal(legacy.tabs.length, 0, 'a payload without insights has no tabs')
   assert.ok(legacy.headings().includes('延迟趋势'), 'a payload without insights keeps the latency chart')
   assert.ok(!legacy.headings().includes('近 7 天概览'), 'no overview without insights')
+})
+
+/** Sample summaries block with two daily reports and one weekly report. */
+function sampleSummaries() {
+  const now = Date.now()
+  return {
+    enabled: true,
+    dailyTime: '18:30',
+    weeklyTime: '19:00',
+    generatedAt: now,
+    lastError: null,
+    daily: [
+      {
+        kind: 'daily',
+        key: 'daily:2026-11-03',
+        fromKey: '2026-11-03',
+        toKey: '2026-11-03',
+        title: '11月3日（周二） 日报',
+        text: '一、今日主要工作\n1. 完成工作总结面板\n2. 补齐日报渲染\n\n二、完成情况\n已完成渲染与生成接口接线。',
+        generatedAt: now - 3_600_000,
+        model: 'deepseek-official/deepseek-chat',
+        sessions: 12,
+        messageCount: 86,
+        materialChars: 5_200,
+      },
+      {
+        kind: 'daily',
+        key: 'daily:2026-11-02',
+        fromKey: '2026-11-02',
+        toKey: '2026-11-02',
+        title: '11月2日（周一） 日报',
+        text: '一、今日主要工作\n梳理需求。',
+        generatedAt: now - 90_000_000,
+        model: 'deepseek-official/deepseek-chat',
+        sessions: 4,
+        messageCount: 21,
+        materialChars: 1_800,
+      },
+    ],
+    weekly: [
+      {
+        kind: 'weekly',
+        key: 'weekly:2026-10-27~2026-10-31',
+        fromKey: '2026-10-27',
+        toKey: '2026-10-31',
+        title: '10月27日（周一） – 10月31日（周五） 周报',
+        text: '一、本周重点\n完成工作台面板。\n\n二、进展与产出\n日报与周报均可复制。',
+        generatedAt: now - 7_200_000,
+        model: 'deepseek-official/deepseek-chat',
+        sessions: 0,
+        messageCount: 0,
+        materialChars: 9_800,
+        dailyCount: 4,
+      },
+    ],
+  }
+}
+
+/**
+ * Concatenated visible text of an element (the shim keeps child text separate).
+ * @param {object} node - element to read.
+ * @returns {string} visible text.
+ */
+function visibleText(node) {
+  return [node.textContent, ...node.querySelectorAll('span').map((span) => span.textContent)].join(' ')
+}
+
+/**
+ * Find one button by its exact visible label inside a scope.
+ * @param {object} scope - search root.
+ * @param {string} label - expected label.
+ * @returns {object | undefined} the button, if any.
+ */
+function findButton(scope, label) {
+  return scope.querySelectorAll('.wb-btn').find((button) => button.textContent === label)
+}
+
+/**
+ * Mount the panel with a summaries block and open the summary tab.
+ * @param {object} summaries - summaries payload block.
+ * @param {object} [options] - test hooks forwarded to `renderPanel`.
+ * @returns {Promise<object>} rendered page facts plus the summary section.
+ */
+async function renderSummaries(summaries, options = {}) {
+  const payload = JSON.parse(readFileSync(join(here, '..', 'out', 'workbench.json'), 'utf8'))
+  payload.summaries = summaries
+  const page = await renderPanel(payload, options)
+  page.clickTab('工作总结')
+  page.section = page.container.querySelector('[data-wb-summary]')
+  return page
+}
+
+test('the summaries tab renders the daily report title, body and period switcher', async () => {
+  const page = await renderSummaries(sampleSummaries())
+  const { container, headings, section } = page
+  assert.ok(headings().includes('工作总结'), 'the summary tab shows its section')
+
+  const title = container.querySelector('.wb-summary-title')
+  assert.ok(title !== null && title.textContent.includes('11月3日（周二） 日报'), `daily title rendered, got: ${title?.textContent}`)
+  const body = container.querySelector('.wb-summary-text')
+  assert.ok(body !== null, 'the report body exists')
+  assert.ok(body.textContent.includes('一、今日主要工作'), 'the report text is rendered verbatim')
+  assert.ok(body.textContent.includes('\n'), 'newlines survive into the line box')
+  // The line box that keeps those breaks visible ships in the stylesheet.
+  assert.match(WORKBENCH_CSS, /\.wb-summary-text[^}]*white-space:\s*pre-wrap/s, 'the summary body keeps line breaks')
+  assert.doesNotMatch(WORKBENCH_CSS, /\ufffd/, 'the stylesheet has no replacement characters')
+
+  const periods = container.querySelectorAll('.wb-summary-period')
+  assert.equal(periods.length, 2, 'one period button per stored daily report')
+  assert.ok(periods[0].className.includes('wb-summary-period-active'), 'the newest period starts selected')
+  assert.equal(periods[0].textContent, '11月3日（周二）')
+
+  const badges = container.querySelector('.wb-summary-badges')
+  const badgeText = badges.querySelectorAll('span').map((span) => span.textContent)
+  assert.ok(badgeText.some((text) => text.includes('deepseek/deepseek-chat')), `model footnote present, got: ${badgeText}`)
+  assert.ok(badgeText.some((text) => text.includes('12 个会话')), 'material size footnote present')
+  const foot = section.querySelector('.wb-summary-foot')
+  assert.ok(foot.querySelectorAll('span').map((span) => span.textContent).join(' ').includes('19:00'), 'the schedule footnote uses the configured times')
+  assert.ok(findButton(container, '复制') !== undefined, 'the copy button exists')
+
+  // Switching period swaps the article and stays on the summary tab.
+  periods[1].dispatch('click')
+  assert.equal(container.querySelector('.wb-summary-title').textContent, '11月2日（周一） 日报')
+  assert.equal(container.querySelector('[data-wb-tab="summaries"]').hidden, false)
+})
+
+test('switching to 周报 renders the weekly report and its source count', async () => {
+  const page = await renderSummaries(sampleSummaries())
+  const { container, section } = page
+  const weeklyButton = findButton(section, '周报')
+  assert.ok(weeklyButton !== undefined, 'the weekly kind button exists')
+  weeklyButton.dispatch('click')
+
+  assert.equal(container.querySelector('.wb-summary-title').textContent, '10月27日（周一） – 10月31日（周五） 周报')
+  assert.ok(container.querySelector('.wb-summary-text').textContent.includes('一、本周重点'))
+  const badgeText = container.querySelector('.wb-summary-badges').querySelectorAll('span').map((span) => span.textContent)
+  assert.ok(badgeText.some((text) => text.includes('4 篇日报')), `weekly footnote counts its source dailies, got: ${badgeText}`)
+  assert.equal(container.querySelectorAll('.wb-summary-period').length, 1, 'only the stored weekly period is offered')
+
+  findButton(section, '日报').dispatch('click')
+  assert.equal(container.querySelector('.wb-summary-title').textContent, '11月3日（周二） 日报', 'switching back restores the daily view')
+})
+
+test('the summaries tab degrades to Chinese hints instead of throwing', async () => {
+  // 1) A schedule with no reports yet.
+  const empty = await renderSummaries({ ...sampleSummaries(), daily: [], weekly: [] })
+  const emptyNotice = empty.container.querySelector('.wb-summary-notice')
+  assert.equal(emptyNotice.hidden, false, 'the empty hint is visible')
+  assert.ok(emptyNotice.textContent.includes('还没有日报'), `empty wording, got: ${emptyNotice.textContent}`)
+  assert.equal(empty.container.querySelector('.wb-summary-article').hidden, true, 'no article without entries')
+
+  // 2) Auto-generation switched off in the plugin config.
+  const off = await renderSummaries({ ...sampleSummaries(), enabled: false })
+  const offNotice = off.container.querySelector('.wb-summary-notice')
+  assert.equal(offNotice.hidden, false)
+  assert.ok(offNotice.textContent.includes('自动生成已关闭'), `disabled wording, got: ${offNotice.textContent}`)
+  assert.ok(offNotice.textContent.includes('立即生成'), 'the hint still points at the manual button')
+
+  // 3) The last scheduled run failed: the stored report still shows, with a warning.
+  const failed = await renderSummaries({ ...sampleSummaries(), lastError: '模型调用失败：超时' })
+  const warn = failed.container.querySelector('.wb-summary-notice')
+  assert.equal(warn.hidden, false)
+  assert.ok(warn.textContent.includes('上次自动生成没有成功') && warn.textContent.includes('超时'), `warning wording, got: ${warn.textContent}`)
+  assert.ok(failed.container.querySelector('.wb-summary-title').textContent.includes('11月3日'), 'the stored report still renders')
+
+  // 4) The host could not read its store: a hard error hint, still no throw.
+  const broken = await renderSummaries({ enabled: false, daily: [], weekly: [], generatedAt: Date.now(), error: 'EACCES: 读不到 summaries.json' })
+  const brokenNotice = broken.container.querySelector('.wb-summary-notice')
+  assert.ok(brokenNotice.textContent.includes('读取本地总结失败') && brokenNotice.textContent.includes('EACCES'), `error wording, got: ${brokenNotice.textContent}`)
+
+  // 5) A payload without the block has no summary tab at all.
+  const payload = JSON.parse(readFileSync(join(here, '..', 'out', 'workbench.json'), 'utf8'))
+  payload.insights = sampleInsights()
+  const legacy = await renderPanel(payload)
+  const summaryTab = legacy.tabFor('工作总结')
+  // Identity is compared as a boolean: handing a DOM node to `assert.equal`
+  // makes Node's failure diff walk the whole shim tree (and can exhaust the heap).
+  assert.ok(summaryTab === undefined || summaryTab.hidden === true, 'no visible summary tab without a summaries block')
+})
+
+test('立即生成 posts the selected kind and repaints only the summary region', async () => {
+  const stored = sampleSummaries()
+  const fresh = {
+    ...stored.daily[0],
+    key: 'daily:2026-11-04',
+    fromKey: '2026-11-04',
+    toKey: '2026-11-04',
+    title: '11月4日（周三） 日报',
+    text: '一、今日主要工作\n刚生成的日报正文。',
+    generatedAt: Date.now(),
+  }
+  const requests = []
+  const page = await renderSummaries(stored, {
+    onGenerate(init, url) {
+      requests.push({ init, url })
+      return { ok: true, status: 200, json: async () => ({ entry: fresh, summaries: { ...stored, daily: [fresh, ...stored.daily] } }) }
+    },
+  })
+  const { container, section } = page
+  const overviewBefore = container.querySelector('[data-wb-tab="overview"]')
+  const summaryPanelBefore = container.querySelector('[data-wb-tab="summaries"]')
+  const generate = findButton(section, '立即生成')
+  assert.ok(generate !== undefined, 'the generate button exists when the host wires the hook')
+  assert.equal(generate.hidden, false)
+
+  generate.dispatch('click')
+  await new Promise((resolve) => setTimeout(resolve, 30))
+
+  assert.equal(requests.length, 1, 'one generate request per click')
+  assert.match(requests[0].url, /\/api\/summaries\/generate$/, 'the request goes to the generate route')
+  assert.equal(requests[0].init.method, 'POST')
+  assert.deepEqual(JSON.parse(requests[0].init.body), { kind: 'daily' }, 'the body carries the selected kind')
+  assert.equal(container.querySelector('.wb-summary-title').textContent, '11月4日（周三） 日报', 'the new report replaces the view')
+  assert.equal(container.querySelectorAll('.wb-summary-period').length, 3, 'the period switcher grew by one')
+  assert.equal(generate.disabled, false, 'the button is usable again')
+  assert.equal(generate.textContent, '立即生成')
+  // Node identity as booleans, for the same reason as above.
+  assert.ok(container.querySelector('[data-wb-tab="overview"]') === overviewBefore, 'the overview panel was not rebuilt')
+  assert.ok(container.querySelector('[data-wb-tab="summaries"]') === summaryPanelBefore, 'the summary panel kept its nodes')
+})
+
+test('generation skip and failure both end in a Chinese notice', async () => {
+  let mode = 'skip'
+  const requests = []
+  const page = await renderSummaries(sampleSummaries(), {
+    onGenerate(init) {
+      requests.push(JSON.parse(init.body))
+      if (mode === 'skip') return { ok: true, status: 200, json: async () => ({ skipped: true, reason: 'no-llm-service' }) }
+      return { ok: false, status: 500, json: async () => ({ error: '模型调用失败：超时' }) }
+    },
+  })
+  const { container, section } = page
+  const generate = findButton(section, '立即生成')
+  const notice = container.querySelector('.wb-summary-notice')
+
+  // Weekly first: the body must follow the kind button, not the old state.
+  findButton(section, '周报').dispatch('click')
+  generate.dispatch('click')
+  await new Promise((resolve) => setTimeout(resolve, 30))
+  assert.deepEqual(requests[0], { kind: 'weekly' }, 'the weekly kind reaches the host')
+  assert.equal(notice.hidden, false)
+  assert.ok(notice.textContent.includes('没有可用的模型服务'), `skip wording, got: ${notice.textContent}`)
+  assert.equal(generate.disabled, false, 'a skip re-enables the button')
+  assert.equal(generate.textContent, '立即生成')
+
+  mode = 'fail'
+  generate.dispatch('click')
+  await new Promise((resolve) => setTimeout(resolve, 30))
+  assert.ok(notice.textContent.includes('生成失败') && notice.textContent.includes('超时'), `failure wording, got: ${notice.textContent}`)
+  assert.equal(generate.disabled, false, 'a failure re-enables the button')
+  assert.equal(generate.textContent, '立即生成')
+})
+
+test('the offline snapshot renders stored reports but offers no generate button', () => {
+  const payload = JSON.parse(readFileSync(join(here, '..', 'out', 'workbench.json'), 'utf8'))
+  payload.summaries = sampleSummaries()
+  const doc = new ShimDocument()
+  const host = doc.createElement('div')
+  host.clientWidth = 900
+  // No `generateSummary` hook: exactly the standalone dashboard's options.
+  assert.doesNotThrow(() => renderWorkbench(host, payload, { compact: true }))
+  const tabs = host.querySelectorAll('.wb-tab')
+  const summaryTab = tabs.find((tab) => visibleText(tab).includes('工作总结'))
+  assert.ok(summaryTab !== undefined, 'the summary tab exists offline')
+  summaryTab.dispatch('click')
+
+  assert.ok(host.querySelector('.wb-summary-title').textContent.includes('11月3日'), 'the stored report still renders')
+  const generate = findButton(host, '立即生成')
+  assert.ok(generate !== undefined, 'the button element exists')
+  assert.equal(generate.hidden, true, 'but it is hidden without a host hook')
+
+  // The copy fallback tells the user what to do instead of failing silently.
+  const copy = findButton(host, '复制')
+  assert.ok(copy !== undefined)
+  copy.dispatch('click')
+  assert.equal(copy.textContent, '请手动选中复制')
 })
 

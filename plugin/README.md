@@ -1,9 +1,12 @@
 # DSH 工作台面板（@dsh-workbench/panel）
 
-在 DSH 里加一个「工作台」侧边栏页面：**只统计语言模型调用**。页面分两个 tab：
+在 DSH 里加一个「工作台」侧边栏页面：**只统计语言模型调用**。页面分三个 tab：
 
 - **概览**：正在处理实时状态（会话/工具/批准/后台任务/待办）、汇总卡片、近 7 天花费卡片（调用次数/Token/估算花费/缓存已省）、调用热力图、每日趋势；延迟趋势默认隐藏，需要时用 `latencyEnabled: true` 打开。
-- **花费与产出**：一键周报（可直接复制）、等你确认、上下文提醒、未完成待办、最近交付。切换 tab 后保持选中，30 秒刷新数据不会跳回；有等待或上下文提醒时 tab 上带数字角标。
+- **花费与产出**：一键周报（可直接复制）、等你确认、上下文提醒、未完成待办、最近交付。
+- **工作总结**（1.4.0）：由本机模型把当天/本周的对话材料写成书面日报与周报，可切历史、可复制；默认每天 18:30 出日报、每周五 18:30 出周报。详见下方「工作总结」。
+
+切换 tab 后保持选中，30 秒刷新数据不会跳回；有等待或上下文提醒时 tab 上带数字角标。
 
 - 数据来源：`$DSH_HOME/sessions/**/session*.jsonl.zstd` 会话日志，直接解析，不依赖任何其他插件。
 - 统计口径：`step/start → step/end` 之间调用了语言模型的那一步记 1 次调用；会话标题、联网搜索等辅助模型调用不计入。
@@ -14,8 +17,8 @@
 
 ```bash
 # 1. 拿到包（二选一）
-#    a) 本地 tarball：把 dsh-workbench-panel-1.3.3.tgz 发给对方
-npx -y @deepseek-ai/dsh plugin --profile web add ./dsh-workbench-panel-1.3.3.tgz
+#    a) 本地 tarball：把 dsh-workbench-panel-1.4.0.tgz 发给对方
+npx -y @deepseek-ai/dsh plugin --profile web add ./dsh-workbench-panel-1.4.0.tgz
 
 #    b) 已发布到 npm：直接用包名
 npx -y @deepseek-ai/dsh plugin --profile web add @dsh-workbench/panel
@@ -29,7 +32,7 @@ launchctl kickstart -k gui/$(id -u)/ai.openclaw.dsh-rc8   # macOS launchd 启动
 
 打开后侧边栏会出现「工作台」入口（英文界面显示 Workbench），点开就是面板。
 
-> tarball 的文件名不含 scope：`@dsh-workbench/panel@1.3.3` 打包出来是 `dsh-workbench-panel-1.3.3.tgz`，这是 npm 的规则，不是漏字。
+> tarball 的文件名不含 scope：`@dsh-workbench/panel@1.4.0` 打包出来是 `dsh-workbench-panel-1.4.0.tgz`，这是 npm 的规则，不是漏字。
 
 ### 如果 `dsh plugin add` 报 pnpm 错误
 
@@ -40,7 +43,7 @@ launchctl kickstart -k gui/$(id -u)/ai.openclaw.dsh-rc8   # macOS launchd 启动
 ```bash
 # a) 先在 profile 目录里对齐一次，再重试
 cd ~/.dsh/profiles/web && pnpm install --config.public-hoist-pattern='*'
-npx -y @deepseek-ai/dsh plugin --profile web add ./dsh-workbench-panel-1.3.3.tgz
+npx -y @deepseek-ai/dsh plugin --profile web add ./dsh-workbench-panel-1.4.0.tgz
 
 # b) 手工接线（不跑 pnpm）
 #    注意 scope 目录要一起建，软链名是 @dsh-workbench/panel
@@ -70,6 +73,13 @@ ln -sfn /绝对路径/到/解压后的/package ~/.dsh/profiles/web/node_modules/
 | `contextDays` | `2` | 「上下文提醒」只看最近几天活跃的会话（天） |
 | `contextWarnTokens` | `200000` | 上下文超过多少 token 就提醒（20000~2000000） |
 | `prices` | 内置价目表 | 每百万 token 的估算单价（CNY），见下方「花费计算口径」 |
+| `summaryEnabled` | `true` | 是否自动生成每日/每周工作总结；关掉后仍可手动点「立即生成」 |
+| `summaryDailyTime` | `18:30` | 每天几点（本地时间 `HH:MM`）生成当天日报；过点后还会补昨天缺的那篇 |
+| `summaryWeeklyTime` | `18:30` | 周报生成时间（`HH:MM`）。周五及以后保证本周（周一至周五）周报，周一到周四补上一周的 |
+| `summaryProvider` | `''` | 生成总结用的模型服务；与 `summaryModel` 都留空表示用「当前会话默认模型」 |
+| `summaryModel` | `''` | 生成总结用的模型名，与 `summaryProvider` 配对使用 |
+| `summaryMaxChars` | `60000` | 一次送进模型的对话材料字符上限（5000~200000） |
+| `summaryMaxOutputTokens` | `1800` | 模型输出上限（300~8000）；周报比日报长，留足余量 |
 
 ## 调用热力图
 
@@ -118,12 +128,27 @@ ln -sfn /绝对路径/到/解压后的/package ~/.dsh/profiles/web/node_modules/
 - **这是估算，不是账单**：价格会变、推理模型可能另有计费规则，界面上标注「估算」。
 - **隐私**：交付物只显示文件路径/文件名（为了让你能找到文件），路径里的令牌形态串同样会打码；不显示文件内容。
 
+## 工作总结（1.4.0）
+
+「工作总结」tab 里放两份东西：**每日日报**和**每周周报**，都由本机模型写成**可以直接发给上级的书面总结**，不用自己再润色一遍。
+
+- **材料从哪来**：还是 `$DSH_HOME/sessions` 的会话日志。只取时间窗口内**真人说的话**（按日志里的消息来源判定），整段丢掉系统注入的运行时上下文、时间注入、技能目录；寒暄（“好”“继续”“谢谢”）和一句话以下的碎消息也过滤掉。工具输出、命令参数、文件内容一律不进模型。
+- **什么时候生成**：默认每天 18:30 出当天日报，并补昨天缺的一篇；每周五 18:30 出本周周报（周一至周五）；周一到周四启动时补上一周缺的周报。同一个时段只尝试一次，机器关着就等下次启动补跑。
+- **周报的两种写法**：本周有日报 → 把日报合并润色；本周还没日报 → 直接取本周一至周五的原始材料写，所以功能一开就能用，不用等攒够五篇日报。
+- **格式固定**：日报四段（今日主要工作 / 完成情况 / 问题与风险 / 明日计划，200~400 字），周报四段（本周重点 / 进展与产出 / 问题与风险 / 下周计划，300~500 字）；简体中文，不编造材料里没有的事。
+- **脱敏**：模型输出落地前再打一遍码（`github_pat_*`、`ghp_*`、`sk-*`、`AKIA*`、超长随机串、`token=` 类参数），所以存档里不会留着密钥形态的串。
+- **存哪**：`$DSH_HOME/workbench/summaries.json`，最多保留 200 篇；面板里可切最近 12 期，一键复制。
+- **依赖**：需要 profile 里有 `llm` 服务（生成用）和模型路由。没有时报错是中文说明，不会崩：接口返回 503 + 原因，面板顶部黄字提示；已经存下来的总结照常能看。
+- **注意**：18:30 那一刻生成的日报只覆盖到 18:30，当晚后续的工作会算进第二天。想手动补一篇，点面板里的「立即生成」。
+
 ## HTTP 路由
 
 | 路由 | 说明 |
 | --- | --- |
 | `/dsh-workbench/api/summary` | 聚合后的 JSON 数据（面板拉取的就是它） |
 | `/dsh-workbench/api/active` | 实时状态 JSON（会话/后台任务/计数），面板每 10 秒拉一次 |
+| `/dsh-workbench/api/summaries` | 已存的日报/周报清单与配置（总结 tab 用它渲染） |
+| `/dsh-workbench/api/summaries/generate` | `POST {"kind":"daily"\|"weekly"}` 立即生成一篇；成功 `{entry, summaries}`，没材料 `{skipped:true,reason}`，缺模型服务 503 + 中文原因 |
 | `/dsh-workbench/api/health` | 采集与缓存状态，排查问题用 |
 | `/dsh-workbench/dashboard.html` | 独立的单文件仪表盘页（需要宿主先构建一次，见下） |
 

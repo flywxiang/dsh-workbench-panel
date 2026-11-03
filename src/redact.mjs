@@ -17,6 +17,19 @@ const SECRET_PATTERNS = [
 ]
 
 /**
+ * Replace credential-shaped substrings while keeping line breaks and spacing.
+ * Used where the text itself is the deliverable (generated summaries), so
+ * collapsing whitespace would damage the layout.
+ * @param {string} text - raw text.
+ * @returns {string} text with credentials masked.
+ */
+export function redactSecrets(text) {
+  let masked = String(text)
+  for (const [pattern, replacement] of SECRET_PATTERNS) masked = masked.replace(pattern, replacement)
+  return masked
+}
+
+/**
  * Collapse whitespace and cut text to a display length.
  * @param {string} text - input text.
  * @param {number} max - maximum length.

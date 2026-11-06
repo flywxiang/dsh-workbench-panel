@@ -80,7 +80,7 @@ ln -sfn /绝对路径/到/解压后的/package ~/.dsh/profiles/web/node_modules/
 | `summaryProvider` | `''` | 生成总结用的模型服务；与 `summaryModel` 都留空表示用「当前会话默认模型」 |
 | `summaryModel` | `''` | 生成总结用的模型名，与 `summaryProvider` 配对使用 |
 | `summaryMaxChars` | `60000` | 一次送进模型的对话材料字符上限（5000~200000） |
-| `summaryMaxOutputTokens` | `1800` | 模型输出上限（300~8000）；周报比日报长，留足余量 |
+| `summaryMaxOutputTokens` | `4000` | 模型输出上限（300~8000）；推理模型的「思考」也占这个额度，1800 时周报被截断过。被截断时自动用 8000 重试一次 |
 
 ## 调用热力图
 

@@ -17,7 +17,7 @@ DSH（DeepSeek Harness）的「工作台」插件：**只统计语言模型调�
 想用的人**不需要 clone 这个仓库**，直接装 Release 里的 tgz：
 
 ```bash
-npx -y @deepseek-ai/dsh plugin --profile web add ./dsh-workbench-panel-1.4.1.tgz
+npx -y @deepseek-ai/dsh plugin --profile web add ./dsh-workbench-panel-1.4.2.tgz
 launchctl kickstart -k gui/$(id -u)/ai.openclaw.dsh-rc8
 ```
 

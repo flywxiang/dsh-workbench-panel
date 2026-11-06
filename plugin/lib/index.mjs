@@ -28,6 +28,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { collectWorkbench, resolveDshHome } from './shared/collect.mjs'
 import { createActiveTracker } from './shared/active-state.mjs'
+import { dayKeyOf } from './shared/summary-data.mjs'
 import {
   appendSummaryLog,
   dueSummaryJobs,
@@ -139,7 +140,7 @@ export function registerRoutes(ctx, config) {
   const summaryDailyTime = typeof config.summaryDailyTime === 'string' ? config.summaryDailyTime : '18:30'
   const summaryWeeklyTime = typeof config.summaryWeeklyTime === 'string' ? config.summaryWeeklyTime : '18:30'
   const summaryMaxChars = clampInt(config.summaryMaxChars, 60_000, 5_000, 200_000)
-  const summaryMaxTokens = clampInt(config.summaryMaxOutputTokens, 1800, 300, 8000)
+  const summaryMaxTokens = clampInt(config.summaryMaxOutputTokens, 4000, 300, 8000)
   const summaryBackfillDays = clampInt(config.summaryBackfillDays, 7, 1, 30)
   const summaryProvider = typeof config.summaryProvider === 'string' ? config.summaryProvider : ''
   const summaryModel = typeof config.summaryModel === 'string' ? config.summaryModel : ''
@@ -236,9 +237,10 @@ export function registerRoutes(ctx, config) {
    * Run one summary generation with the configured route.
    * @param {'daily' | 'weekly'} kind - summary kind.
    * @param {string | undefined} dateKey - period anchor.
+   * @param {number} [maxTokens] - output cap for this run; defaults to config.
    * @returns {Promise<object>} generated entry or a skip reason.
    */
-  const runSummary = async (kind, dateKey) => {
+  const runSummary = async (kind, dateKey, maxTokens) => {
     const llm = llmService()
     if (llm === null) return { skipped: true, reason: 'no-llm-service' }
     const target = summaryTarget()
@@ -252,7 +254,7 @@ export function registerRoutes(ctx, config) {
       provider: target.provider,
       model: target.model,
       maxChars: summaryMaxChars,
-      maxTokens: summaryMaxTokens,
+      maxTokens: maxTokens ?? summaryMaxTokens,
     })
     if (result?.skipped !== true) lastSummaryAt = Date.now()
     return result
@@ -268,6 +270,12 @@ export function registerRoutes(ctx, config) {
   let summaryInflight = false
   /** Per-job bookkeeping: tries so far and the start of the last attempt. */
   const summaryAttempts = new Map()
+  /** Local day the attempt bookkeeping belongs to; tries reset on a new day. */
+  let summaryAttemptDay = null
+  /** Output cap for one retry after a truncated answer. */
+  const SUMMARY_WIDE_TOKENS = 8000
+  /** A truncated weekly report is worth one wider retry instead of losing the week. */
+  const isTruncated = (message) => /截断|max-tokens|maxTokens/iu.test(message)
   const checkSummaries = async () => {
     if (!summaryEnabled || summaryInflight) return
     try {
@@ -291,6 +299,13 @@ export function registerRoutes(ctx, config) {
         return
       }
       summaryInflight = true
+      // A new local day gets a fresh set of tries, so a bad evening cannot burn a
+      // period for good.
+      const dayKey = dayKeyOf(now, timeZone)
+      if (summaryAttemptDay !== dayKey) {
+        summaryAttempts.clear()
+        summaryAttemptDay = dayKey
+      }
       for (const job of jobs) {
         const attemptKey = `${job.kind}:${job.dateKey}`
         const previous = summaryAttempts.get(attemptKey)
@@ -304,7 +319,7 @@ export function registerRoutes(ctx, config) {
           summaryAttempts.set(attemptKey, { tries: 1, at: now })
         }
         try {
-          const result = await runSummary(job.kind, job.dateKey)
+          let result = await runSummary(job.kind, job.dateKey)
           if (result?.skipped === true) {
             if (result.reason === 'no-material') {
               // Nothing was written for that day; remember it so the backfill
@@ -321,8 +336,25 @@ export function registerRoutes(ctx, config) {
             lastSummaryError = null
           }
         } catch (error) {
-          lastSummaryError = String(error?.message ?? error)
-          appendSummaryLog(dshHome, `失败 ${attemptKey}：${lastSummaryError}`)
+          const message = String(error?.message ?? error)
+          if (isTruncated(message) && summaryMaxTokens < SUMMARY_WIDE_TOKENS) {
+            // Weekly text plus a reasoning model can outrun the configured cap:
+            // retry once with a wider budget rather than dropping the period.
+            appendSummaryLog(dshHome, `重试 ${attemptKey}（输出上限 ${summaryMaxTokens} → ${SUMMARY_WIDE_TOKENS}）：${message}`)
+            try {
+              await runSummary(job.kind, job.dateKey, SUMMARY_WIDE_TOKENS)
+              summaryAttempts.delete(attemptKey)
+              lastSummaryError = null
+              continue
+            } catch (widerError) {
+              const widerMessage = String(widerError?.message ?? widerError)
+              lastSummaryError = widerMessage
+              appendSummaryLog(dshHome, `失败 ${attemptKey}（输出上限 ${SUMMARY_WIDE_TOKENS}）：${widerMessage}`)
+              continue
+            }
+          }
+          lastSummaryError = message
+          appendSummaryLog(dshHome, `失败 ${attemptKey}：${message}`)
         }
       }
     } finally {

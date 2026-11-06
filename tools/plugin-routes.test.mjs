@@ -199,7 +199,8 @@ test('the health route reports collection accounting and summary configuration',
   assert.equal(body.summaries.dailyTime, '18:30')
   assert.equal(body.summaries.weeklyTime, '18:30')
   assert.equal(body.summaries.maxChars, 60000)
-  assert.equal(body.summaries.maxOutputTokens, 1800)
+  assert.equal(body.summaries.maxOutputTokens, 4000)
+  assert.equal(body.summaries.backfillDays, 7)
   assert.equal(body.summaries.route, null, 'no default-model service in the fake context')
 })
 

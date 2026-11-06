@@ -26,5 +26,6 @@
         summaryModel: ''
         # 送进模型的材料字符上限，默认 60000（约 6 万字符）。
         summaryMaxChars: 60000
-        # 模型输出 token 上限，默认 1800；周报比日报长，留足余量。
-        summaryMaxOutputTokens: 1800
+        # 模型输出 token 上限，默认 4000；推理模型把“思考”也算进这个额度，1800 时
+        # 本周周报被截断过。真被截断时插件会自动用 8000 再试一次。
+        summaryMaxOutputTokens: 4000

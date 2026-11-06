@@ -12,12 +12,14 @@
         # 每日/每周工作总结：由宿主模型服务生成，写在 $DSH_HOME/workbench/summaries.json。
         # 总开关，默认 true。
         summaryEnabled: true
-        # 本地时间 HH:MM。过点后自动补齐“今天 + 昨天”的日报（机器关着时下次启动补跑）。
-        # 默认 '18:30'。
+        # 本地时间 HH:MM。过点后自动补写当天的日报。默认 '18:30'。
         summaryDailyTime: '18:30'
-        # 本地时间 HH:MM。周五及以后保证本周（周一至周五）周报；周一到周四补上一周周报。
+        # 本地时间 HH:MM。周五及以后保证本周（周一至周五）周报；其余时间保证上一周周报。
         # 默认 '18:30'。
         summaryWeeklyTime: '18:30'
+        # 往回补几天：过期没写成的日期每次启动/每次检查都会补，最多补这么多天。
+        # 关机过了 18:30 也不会再丢掉一整天。默认 7，上限 30。
+        summaryBackfillDays: 7
         # 可选：显式指定生成总结用的模型路由。两项都留空时使用当前会话默认模型
         # （agentDefaultModel.currentSelection()），默认 ''。
         summaryProvider: ''

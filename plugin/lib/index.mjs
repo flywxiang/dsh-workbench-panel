@@ -28,8 +28,16 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { collectWorkbench, resolveDshHome } from './shared/collect.mjs'
 import { createActiveTracker } from './shared/active-state.mjs'
-import { dueSummaryJobs, generateSummary, listSummaryEntries, loadSummaryStore } from './shared/summaries.mjs'
-import { dayKeyOf } from './shared/summary-data.mjs'
+import {
+  appendSummaryLog,
+  dueSummaryJobs,
+  generateSummary,
+  listSummaryEntries,
+  loadSummaryStore,
+  markSummaryEmpty,
+  summaryKey,
+} from './shared/summaries.mjs'
+
 
 /** Route prefix owned by this plugin. */
 export const BASE_PATH = '/dsh-workbench'
@@ -132,10 +140,14 @@ export function registerRoutes(ctx, config) {
   const summaryWeeklyTime = typeof config.summaryWeeklyTime === 'string' ? config.summaryWeeklyTime : '18:30'
   const summaryMaxChars = clampInt(config.summaryMaxChars, 60_000, 5_000, 200_000)
   const summaryMaxTokens = clampInt(config.summaryMaxOutputTokens, 1800, 300, 8000)
+  const summaryBackfillDays = clampInt(config.summaryBackfillDays, 7, 1, 30)
   const summaryProvider = typeof config.summaryProvider === 'string' ? config.summaryProvider : ''
   const summaryModel = typeof config.summaryModel === 'string' ? config.summaryModel : ''
   let lastSummaryError = null
   let lastSummaryAt = null
+  /** Retries per job and the pause between them, so one failure does not lose a day. */
+  const SUMMARY_MAX_TRIES = 3
+  const SUMMARY_RETRY_MS = 10 * 60 * 1000
   /** Reasons the panel should read as a configuration/environment problem. */
   const ENVIRONMENT_SKIP_REASONS = new Set(['no-llm-service', 'no-model-route'])
   /** Human-readable text for a skip reason. */
@@ -208,6 +220,19 @@ export function registerRoutes(ctx, config) {
   }
 
   /**
+   * Newest lines of the summary log, for `/api/health`.
+   * @returns {string[]} up to five lines, newest last.
+   */
+  const summaryLogTail = () => {
+    try {
+      const text = readFileSync(join(dshHome, 'workbench', 'summaries.log'), 'utf8')
+      return text.split('\n').filter((line) => line !== '').slice(-5)
+    } catch {
+      return []
+    }
+  }
+
+  /**
    * Run one summary generation with the configured route.
    * @param {'daily' | 'weekly'} kind - summary kind.
    * @param {string | undefined} dateKey - period anchor.
@@ -234,48 +259,70 @@ export function registerRoutes(ctx, config) {
   }
 
   /**
-   * Auto-generate summaries whose time has come. Runs on a slow timer and skips
-   * keys already attempted within the same local day, so an empty day cannot
-   * loop every tick.
+   * Auto-generate summaries whose turn has come, including gaps from the past
+   * `summaryBackfillDays` days. Runs on a slow timer; a failed job is retried a
+   * couple of times with a pause, and every failure is appended to
+   * `$DSH_HOME/workbench/summaries.log` so a missed day leaves evidence.
    * @returns {Promise<void>}
    */
   let summaryInflight = false
-  const summaryAttempts = new Set()
-  let summaryAttemptDay = null
+  /** Per-job bookkeeping: tries so far and the start of the last attempt. */
+  const summaryAttempts = new Map()
   const checkSummaries = async () => {
     if (!summaryEnabled || summaryInflight) return
     try {
       const now = Date.now()
-      const bucket = dayKeyOf(now, timeZone)
-      if (summaryAttemptDay !== bucket) {
-        summaryAttempts.clear()
-        summaryAttemptDay = bucket
-      }
       const store = loadSummaryStore(dshHome)
       const jobs = dueSummaryJobs({
         now,
         timeZone,
         dailyTime: summaryDailyTime,
         weeklyTime: summaryWeeklyTime,
+        backfillDays: summaryBackfillDays,
         store,
       })
       if (jobs.length === 0) return
       // Explain why nothing can be generated instead of failing silently: the
       // panel shows this text, and /api/health repeats it.
       if (llmService() === null || summaryTarget() === null) {
-        lastSummaryError = skipMessage(llmService() === null ? 'no-llm-service' : 'no-model-route')
+        const message = skipMessage(llmService() === null ? 'no-llm-service' : 'no-model-route')
+        if (lastSummaryError !== message) appendSummaryLog(dshHome, `未生成：${message}`)
+        lastSummaryError = message
         return
       }
       summaryInflight = true
       for (const job of jobs) {
         const attemptKey = `${job.kind}:${job.dateKey}`
-        if (summaryAttempts.has(attemptKey)) continue
-        summaryAttempts.add(attemptKey)
+        const previous = summaryAttempts.get(attemptKey)
+        if (previous !== undefined) {
+          if (previous.tries >= SUMMARY_MAX_TRIES) continue
+          if (now - previous.at < SUMMARY_RETRY_MS) continue
+          previous.tries += 1
+          previous.at = now
+        } else {
+          if (summaryAttempts.size > 400) summaryAttempts.clear()
+          summaryAttempts.set(attemptKey, { tries: 1, at: now })
+        }
         try {
           const result = await runSummary(job.kind, job.dateKey)
-          lastSummaryError = result?.skipped === true ? skipMessage(result.reason) : null
+          if (result?.skipped === true) {
+            if (result.reason === 'no-material') {
+              // Nothing was written for that day; remember it so the backfill
+              // does not rescan a finished day on every tick.
+              if (job.kind === 'daily') markSummaryEmpty(dshHome, summaryKey('daily', job.dateKey, job.dateKey))
+              summaryAttempts.delete(attemptKey)
+              lastSummaryError = null
+            } else {
+              lastSummaryError = skipMessage(result.reason)
+              appendSummaryLog(dshHome, `跳过 ${attemptKey}：${lastSummaryError}`)
+            }
+          } else {
+            summaryAttempts.delete(attemptKey)
+            lastSummaryError = null
+          }
         } catch (error) {
           lastSummaryError = String(error?.message ?? error)
+          appendSummaryLog(dshHome, `失败 ${attemptKey}：${lastSummaryError}`)
         }
       }
     } finally {
@@ -551,9 +598,11 @@ export function registerRoutes(ctx, config) {
           route: summaryTarget(),
           maxChars: summaryMaxChars,
           maxOutputTokens: summaryMaxTokens,
-          attempts: [...summaryAttempts],
+          backfillDays: summaryBackfillDays,
+          attempts: [...summaryAttempts].map(([key, info]) => ({ key, tries: info.tries })),
           lastError: lastSummaryError,
           lastGeneratedAt: lastSummaryAt,
+          log: summaryLogTail(),
         },
       })
     },

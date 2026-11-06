@@ -131,9 +131,15 @@ export function summaryKey(kind, fromKey, toKey) {
  * @returns {object[]} entries.
  */
 export function listSummaryEntries(store, kind) {
+  // Newest period first, not newest written: a backfilled day belongs in its own
+  // place in the list, so the date chips always read in calendar order.
   return Object.values(store.entries)
     .filter((entry) => entry !== null && typeof entry === 'object' && entry.kind === kind)
-    .sort((left, right) => (right.generatedAt ?? 0) - (left.generatedAt ?? 0))
+    .sort((left, right) => {
+      const byPeriod = String(right.fromKey ?? '').localeCompare(String(left.fromKey ?? ''))
+      if (byPeriod !== 0) return byPeriod
+      return (right.generatedAt ?? 0) - (left.generatedAt ?? 0)
+    })
 }
 
 /**
@@ -145,6 +151,10 @@ export function listSummaryEntries(store, kind) {
 export function saveSummaryEntry(dshHome, entry) {
   const store = loadSummaryStore(dshHome)
   store.entries[entry.key] = entry
+  // A manual generation clears a "nothing to write" marker for the same period.
+  if (store.skipped !== null && typeof store.skipped === 'object' && store.skipped[entry.key] !== undefined) {
+    delete store.skipped[entry.key]
+  }
   const all = Object.values(store.entries).sort((left, right) => (right.generatedAt ?? 0) - (left.generatedAt ?? 0))
   for (const stale of all.slice(MAX_ENTRIES)) delete store.entries[stale.key]
   saveSummaryStore(dshHome, store)
@@ -443,21 +453,35 @@ function parseClock(value, fallback) {
 /**
  * List the summary jobs that are due right now.
  *
- * Explainable rules, applied after the configured local time has passed:
- *   - daily: today's report and yesterday's report must both exist, so a day
- *     the machine was off is filled in on the next tick;
- *   - weekly: from Friday onwards the current Monday-to-Friday week must have a
- *     report; on Monday through Thursday the previous week must have one, which
- *     catches up a report missed while the service was not running.
+ * Explainable rules:
+ *   - backfill: every one of the last `backfillDays` local days that has no
+ *     report yet is queued, oldest first, no matter what the clock says. This is
+ *     what makes a missed evening heal itself: a machine switched off at 18:30
+ *     would otherwise never fill that day, because the old rule only ever looked
+ *     at "today and yesterday, after the configured time";
+ *   - daily: today's report is queued once the configured time has passed;
+ *   - weekly: the last finished Monday-to-Friday week must exist at any time, and
+ *     the running week is queued after its Friday time.
+ *
+ * Days without work conversation cost nothing: generation checks the material
+ * first and returns `no-material` before it calls the model.
  * @param {object} input
  * @param {number} input.now - reference instant.
  * @param {string} input.timeZone - IANA zone.
  * @param {string} [input.dailyTime] - `HH:MM`, default `18:30`.
  * @param {string} [input.weeklyTime] - `HH:MM`, default `18:30`.
+ * @param {number} [input.backfillDays] - how far back to look for gaps, default 7.
  * @param {object} input.store - summary store.
  * @returns {{kind: 'daily'|'weekly', dateKey: string}[]} due jobs, daily first.
  */
-export function dueSummaryJobs({ now, timeZone, dailyTime = '18:30', weeklyTime = '18:30', store }) {
+export function dueSummaryJobs({
+  now,
+  timeZone,
+  dailyTime = '18:30',
+  weeklyTime = '18:30',
+  backfillDays = 7,
+  store,
+}) {
   const todayKey = dayKeyOf(now, timeZone)
   const clock = localTimeOf(now, timeZone)
   const nowMinutes = clock.hour * 60 + clock.minute
@@ -466,18 +490,68 @@ export function dueSummaryJobs({ now, timeZone, dailyTime = '18:30', weeklyTime 
   const has = (kind, fromKey, toKey) =>
     store.entries[summaryKey(kind, fromKey, toKey)] !== undefined
   const jobs = []
-  if (dailyDue) {
-    const yesterday = addDays(todayKey, -1)
-    if (!has('daily', todayKey, todayKey)) jobs.push({ kind: 'daily', dateKey: todayKey })
-    if (!has('daily', yesterday, yesterday)) jobs.push({ kind: 'daily', dateKey: yesterday })
+  const span = Math.max(0, Math.min(30, Math.trunc(Number(backfillDays) || 0)))
+  const empty = store.skipped !== null && typeof store.skipped === 'object' ? store.skipped : {}
+  for (let offset = span; offset >= 1; offset -= 1) {
+    const dateKey = addDays(todayKey, -offset)
+    if (has('daily', dateKey, dateKey)) continue
+    // A finished day already found to have no work conversation is not rescanned
+    // on every tick; a manual "立即生成" still re-reads it on request.
+    if (empty[summaryKey('daily', dateKey, dateKey)] !== undefined) continue
+    jobs.push({ kind: 'daily', dateKey })
   }
-  if (weeklyDue) {
-    const weekday = isoWeekdayOfKey(todayKey)
-    // Friday (5) and the weekend belong to the week that just ended; Monday to
-    // Thursday look back at the previous week for a report that was missed.
-    const anchorKey = weekday >= 5 ? todayKey : addDays(todayKey, -7)
-    const week = workWeekKeys(anchorKey)
-    if (!has('weekly', week.fromKey, week.toKey)) jobs.push({ kind: 'weekly', dateKey: anchorKey })
+  if (dailyDue && !has('daily', todayKey, todayKey)) jobs.push({ kind: 'daily', dateKey: todayKey })
+  // The previous Monday-to-Friday week is finished by any weekday, so it is due
+  // regardless of the clock; the running week only after its Friday time.
+  const lastWeek = workWeekKeys(addDays(todayKey, -7))
+  if (!has('weekly', lastWeek.fromKey, lastWeek.toKey)) jobs.push({ kind: 'weekly', dateKey: addDays(todayKey, -7) })
+  if (weeklyDue && isoWeekdayOfKey(todayKey) >= 5) {
+    const currentWeek = workWeekKeys(todayKey)
+    if (!has('weekly', currentWeek.fromKey, currentWeek.toKey)) jobs.push({ kind: 'weekly', dateKey: todayKey })
   }
   return jobs
+}
+
+/**
+ * Record that a period had no work conversation, so the backfill stops rescanning
+ * it. The marker lives beside the entries and never hides an existing report.
+ * @param {string} dshHome - DSH home directory.
+ * @param {string} key - store key of the empty period.
+ * @returns {void}
+ */
+export function markSummaryEmpty(dshHome, key) {
+  const store = loadSummaryStore(dshHome)
+  if (store.entries[key] !== undefined) return
+  store.skipped = store.skipped !== null && typeof store.skipped === 'object' ? store.skipped : {}
+  store.skipped[key] = Date.now()
+  saveSummaryStore(dshHome, store)
+}
+
+/**
+ * Append one line to the summary log so a failed background run leaves a trace.
+ *
+ * The generator used to keep its error only in memory, where the next success
+ * cleared it; a missed day then had no evidence left. The file is small (it is
+ * trimmed to the newest lines), human-readable, and next to the store.
+ * @param {string} dshHome - DSH home directory.
+ * @param {string} message - already-redacted line.
+ * @returns {void}
+ */
+export function appendSummaryLog(dshHome, message) {
+  const path = join(dshHome, 'workbench', 'summaries.log')
+  try {
+    mkdirSync(dirname(path), { recursive: true })
+    const stamp = new Date().toISOString()
+    let lines = []
+    try {
+      lines = readFileSync(path, 'utf8').split('\n').filter((line) => line !== '')
+    } catch {
+      lines = []
+    }
+    lines.push(`${stamp} ${redactSecrets(String(message)).replace(/\s+/gu, ' ').slice(0, 300)}`)
+    if (lines.length > 200) lines = lines.slice(-200)
+    writeFileSync(path, `${lines.join('\n')}\n`)
+  } catch {
+    // A log that cannot be written must never fail a generation.
+  }
 }

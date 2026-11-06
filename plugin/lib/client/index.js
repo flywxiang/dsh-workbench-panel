@@ -1201,14 +1201,21 @@ window.__ModuleLoader__.load({
           const dailyTime = typeof summaries.dailyTime === 'string' ? summaries.dailyTime : '18:30'
           const weeklyTime = typeof summaries.weeklyTime === 'string' ? summaries.weeklyTime : '18:30'
           summaryFoot.replaceChildren(
-            el(doc, 'span', { text: `每天 ${dailyTime} 自动生成日报，每周五 ${weeklyTime} 自动生成周报` }),
+            el(doc, 'span', { text: `每天 ${dailyTime} 自动生成日报，每周五 ${weeklyTime} 自动生成周报；漏掉的日期会自动补齐` }),
             el(doc, 'span', { text: '内容由本机模型根据对话材料撰写，不含代码与密钥' }),
           )
       
           const list = Array.isArray(summaries[state.summaryKind]) ? summaries[state.summaryKind] : []
-          const entries = list.filter(
-            (entry) => entry !== null && typeof entry === 'object' && typeof entry.text === 'string',
-          )
+          // Newest period first. The host already sorts this way; sorting here too keeps
+          // the chips in calendar order when a page talks to an older host.
+          const entries = list
+            .filter((entry) => entry !== null && typeof entry === 'object' && typeof entry.text === 'string')
+            .slice()
+            .sort((left, right) => {
+              const byPeriod = String(right.fromKey ?? '').localeCompare(String(left.fromKey ?? ''))
+              if (byPeriod !== 0) return byPeriod
+              return (right.generatedAt ?? 0) - (left.generatedAt ?? 0)
+            })
       
           // One notice slot, most specific reason first: a store read error outranks a
           // switched-off schedule, which outranks an empty list, which outranks a

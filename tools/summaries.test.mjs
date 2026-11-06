@@ -10,7 +10,7 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { zstdCompressSync } from 'node:zlib'
@@ -29,12 +29,15 @@ import {
   workWeekKeys,
 } from '../src/summary-data.mjs'
 import {
+  appendSummaryLog,
   callSummaryModel,
   dueSummaryJobs,
   formatDateLabel,
   generateDailySummary,
   generateWeeklySummary,
+  listSummaryEntries,
   loadSummaryStore,
+  markSummaryEmpty,
   saveSummaryEntry,
   summaryKey,
   summariesPath,
@@ -254,53 +257,70 @@ test('weekWindow covers Monday to Friday only', () => {
   assert.equal(addDays('2026-10-30', 1), '2026-10-31')
 })
 
-test('dueSummaryJobs applies the explainable daily and weekly rules', () => {
-  const empty = { version: 1, entries: {} }
+test('dueSummaryJobs backfills past days and keeps the daily/weekly rules', () => {
+  const empty = () => ({ version: 1, entries: {} })
+  const daily = (dateKey) => ({ kind: 'daily', dateKey })
+  const weekly = (dateKey) => ({ kind: 'weekly', dateKey })
+
+  // Monday 09:00: today is not due yet, but the days before it still backfill —
+  // this is what heals an evening the machine was switched off.
   const mondayMorning = Date.parse('2026-11-02T09:00:00+08:00')
-  assert.deepEqual(dueSummaryJobs({ now: mondayMorning, timeZone: TZ, store: empty }), [], 'before the daily time nothing is due')
-
-  const mondayEvening = Date.parse('2026-11-02T19:00:00+08:00')
-  assert.deepEqual(dueSummaryJobs({ now: mondayEvening, timeZone: TZ, store: empty }), [
-    { kind: 'daily', dateKey: '2026-11-02' },
-    { kind: 'daily', dateKey: '2026-11-01' },
-    { kind: 'weekly', dateKey: '2026-10-26' },
-  ], 'Monday evening fills today, yesterday, and last week')
-
-  const withDailies = {
-    version: 1,
-    entries: {
-      [summaryKey('daily', '2026-11-02', '2026-11-02')]: { kind: 'daily' },
-      [summaryKey('daily', '2026-11-01', '2026-11-01')]: { kind: 'daily' },
-    },
-  }
-  assert.deepEqual(dueSummaryJobs({ now: mondayEvening, timeZone: TZ, store: withDailies }), [
-    { kind: 'weekly', dateKey: '2026-10-26' },
-  ])
-  withDailies.entries[summaryKey('weekly', '2026-10-26', '2026-10-30')] = { kind: 'weekly' }
-  assert.deepEqual(dueSummaryJobs({ now: mondayEvening, timeZone: TZ, store: withDailies }), [])
-
-  const fridayEvening = Date.parse('2026-11-06T19:00:00+08:00')
-  assert.deepEqual(dueSummaryJobs({ now: fridayEvening, timeZone: TZ, store: empty }), [
-    { kind: 'daily', dateKey: '2026-11-06' },
-    { kind: 'daily', dateKey: '2026-11-05' },
-    { kind: 'weekly', dateKey: '2026-11-06' },
-  ], 'Friday evening writes the current week')
-
-  const saturdayEvening = Date.parse('2026-11-07T19:00:00+08:00')
-  assert.deepEqual(dueSummaryJobs({ now: saturdayEvening, timeZone: TZ, store: empty }), [
-    { kind: 'daily', dateKey: '2026-11-07' },
-    { kind: 'daily', dateKey: '2026-11-06' },
-    { kind: 'weekly', dateKey: '2026-11-07' },
-  ], 'the weekend still guarantees the week that just ended')
-
-  // A custom weekly time can be due while the daily one is not.
   assert.deepEqual(
-    dueSummaryJobs({ now: Date.parse('2026-11-02T10:00:00+08:00'), timeZone: TZ, weeklyTime: '09:00', store: empty }),
-    [{ kind: 'weekly', dateKey: '2026-10-26' }],
+    dueSummaryJobs({ now: mondayMorning, timeZone: TZ, store: empty(), backfillDays: 3 }),
+    [daily('2026-10-30'), daily('2026-10-31'), daily('2026-11-01'), weekly('2026-10-26')],
+    'past days backfill even before the configured daily time',
   )
+
+  // An empty-day marker stops the backfill from rescanning a finished day.
+  const marked = empty()
+  marked.skipped = { [summaryKey('daily', '2026-11-01', '2026-11-01')]: Date.now() }
+  assert.deepEqual(
+    dueSummaryJobs({ now: mondayMorning, timeZone: TZ, store: marked, backfillDays: 1 }),
+    [weekly('2026-10-26')],
+    'a day already known to be empty is not retried',
+  )
+
+  // Monday evening: yesterday exists, so only today is added.
+  const withYesterday = empty()
+  withYesterday.entries[summaryKey('daily', '2026-11-01', '2026-11-01')] = { kind: 'daily' }
+  withYesterday.entries[summaryKey('weekly', '2026-10-26', '2026-10-30')] = { kind: 'weekly' }
+  const mondayEvening = Date.parse('2026-11-02T19:00:00+08:00')
+  assert.deepEqual(
+    dueSummaryJobs({ now: mondayEvening, timeZone: TZ, store: withYesterday, backfillDays: 1 }),
+    [daily('2026-11-02')],
+    'Monday evening only needs today',
+  )
+
+  // Friday evening: today plus the running week, and the earlier week if missing.
+  const fridayEvening = Date.parse('2026-11-06T19:00:00+08:00')
+  assert.deepEqual(
+    dueSummaryJobs({ now: fridayEvening, timeZone: TZ, store: empty(), backfillDays: 1 }),
+    [daily('2026-11-05'), daily('2026-11-06'), weekly('2026-10-30'), weekly('2026-11-06')],
+    'Friday evening writes today and the running week',
+  )
+
+  // Saturday still guarantees the week that just ended.
+  const saturdayEvening = Date.parse('2026-11-07T19:00:00+08:00')
+  assert.deepEqual(
+    dueSummaryJobs({ now: saturdayEvening, timeZone: TZ, store: empty(), backfillDays: 0 }),
+    [daily('2026-11-07'), weekly('2026-10-31'), weekly('2026-11-07')],
+    'the weekend still guarantees the week that just ended',
+  )
+
+  // backfillDays 0 means "no look-back"; a finished week still needs a report.
+  const settled = empty()
+  settled.entries[summaryKey('weekly', '2026-10-26', '2026-10-30')] = { kind: 'weekly' }
+  assert.deepEqual(dueSummaryJobs({ now: mondayMorning, timeZone: TZ, store: settled, backfillDays: 0 }), [])
+
   // An invalid clock falls back to 18:30 instead of throwing.
   assert.deepEqual(
-    dueSummaryJobs({ now: Date.parse('2026-11-02T18:00:00+08:00'), timeZone: TZ, dailyTime: '25:99', store: empty }),
+    dueSummaryJobs({
+      now: Date.parse('2026-11-02T18:00:00+08:00'),
+      timeZone: TZ,
+      dailyTime: '25:99',
+      store: settled,
+      backfillDays: 0,
+    }),
     [],
   )
 })
@@ -522,6 +542,89 @@ test('collectSummaryMaterial joins sessions that only have tools', () => {
     assert.equal(material.sessions.length, 1, 'tool work marks the session as work even without human text')
     assert.equal(material.sessions[0].tools, 2)
     assert.match(material.materialText, /工具×2/u)
+  } finally {
+    dropHome(home)
+  }
+})
+
+test('an empty day is remembered until a report for it is written', () => {
+  const home = makeHome()
+  try {
+    const emptyKey = summaryKey('daily', '2026-11-02', '2026-11-02')
+    markSummaryEmpty(home, emptyKey)
+    assert.equal(loadSummaryStore(home).skipped[emptyKey] !== undefined, true, 'the empty marker is persisted')
+
+    // A finished day the store already knows is empty is not queued again.
+    assert.equal(
+      dueSummaryJobs({
+        now: Date.parse('2026-11-03T09:00:00+08:00'),
+        timeZone: TZ,
+        store: loadSummaryStore(home),
+        backfillDays: 2,
+      }).some((job) => job.dateKey === '2026-11-02'),
+      false,
+    )
+
+    // Writing the report for that day clears the marker, so nothing hides it.
+    saveSummaryEntry(home, {
+      kind: 'daily',
+      key: emptyKey,
+      fromKey: '2026-11-02',
+      toKey: '2026-11-02',
+      title: '11月2日（周一） 日报',
+      text: '一、今日主要工作\n1. 补写。',
+      generatedAt: Date.now(),
+      model: 'p/m',
+      sessions: 1,
+      messageCount: 1,
+      materialChars: 10,
+    })
+    const store = loadSummaryStore(home)
+    assert.equal(store.skipped[emptyKey], undefined, 'the marker does not outlive the report')
+    assert.equal(store.entries[emptyKey].kind, 'daily')
+  } finally {
+    dropHome(home)
+  }
+})
+
+test('listSummaryEntries orders by period, not by write time', () => {
+  const home = makeHome()
+  try {
+    const entry = (dateKey, writtenAt) => ({
+      kind: 'daily',
+      key: summaryKey('daily', dateKey, dateKey),
+      fromKey: dateKey,
+      toKey: dateKey,
+      title: `${dateKey} 日报`,
+      text: '一、今日主要工作\n1. 补写。',
+      generatedAt: writtenAt,
+      model: 'p/m',
+      sessions: 1,
+      messageCount: 1,
+      materialChars: 10,
+    })
+    // A backfilled older day is written last; the list must still read as a calendar.
+    saveSummaryEntry(home, entry('2026-11-02', Date.parse('2026-11-06T09:58:00+08:00')))
+    saveSummaryEntry(home, entry('2026-11-04', Date.parse('2026-11-06T09:59:00+08:00')))
+    saveSummaryEntry(home, entry('2026-11-03', Date.parse('2026-11-06T10:00:00+08:00')))
+    const keys = listSummaryEntries(loadSummaryStore(home), 'daily').map((item) => item.fromKey)
+    assert.deepEqual(keys, ['2026-11-04', '2026-11-03', '2026-11-02'])
+  } finally {
+    dropHome(home)
+  }
+})
+
+test('appendSummaryLog keeps the newest lines and redacts credentials', () => {
+  const home = makeHome()
+  try {
+    appendSummaryLog(home, 'line one')
+    appendSummaryLog(home, 'token=abcdefghijklmnopqrstuvwxyz0123456789 secret')
+    const path = join(home, 'workbench', 'summaries.log')
+    assert.equal(existsSync(path), true)
+    const lines = readFileSync(path, 'utf8').trim().split('\n')
+    assert.equal(lines.length, 2)
+    assert.match(lines[0], /line one/u)
+    assert.doesNotMatch(lines[1], /abcdefghijklmnopqrstuvwxyz0123456789/u)
   } finally {
     dropHome(home)
   }

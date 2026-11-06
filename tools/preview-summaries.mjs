@@ -34,6 +34,7 @@ function arg(flag, fallback) {
 const dshHome = process.env.DSH_HOME ?? join(homedir(), '.dsh')
 const htmlPath = resolve(arg('--html', join(dshHome, 'workbench', 'out', 'dsh-workbench.html')))
 const pngPath = resolve(arg('--png', join(projectRoot, 'out', '工作台-工作总结-示例.png')))
+const liveUrl = arg('--live', '')
 
 if (!existsSync(htmlPath)) throw new Error(`找不到已构建的页面：${htmlPath}\n先跑 node tools/build.mjs`)
 
@@ -122,6 +123,17 @@ const summaries = {
   lastError: null,
   daily: DAILY,
   weekly: WEEKLY,
+}
+
+// `--live <base url>` pictures the real summaries the running host serves, for
+// checking a store the panel actually read rather than example text.
+if (liveUrl !== '') {
+  const response = await fetch(`${liveUrl.replace(/\/$/u, '')}/dsh-workbench/api/summary?days=3`)
+  if (!response.ok) throw new Error(`读取实时数据失败：HTTP ${response.status}`)
+  const payload = await response.json()
+  if (payload?.summaries === undefined) throw new Error('实时数据里没有 summaries 字段：宿主版本可能较旧')
+  Object.assign(summaries, payload.summaries)
+  console.log(`实时数据：日报 ${summaries.daily.length} 篇，周报 ${summaries.weekly.length} 篇`)
 }
 
 const page = readFileSync(htmlPath, 'utf8')
